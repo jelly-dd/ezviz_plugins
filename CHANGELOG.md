@@ -1,3 +1,6 @@
 ## 0.0.1
 
-* TODO: Describe initial release.
+* `probeDeviceInfo` 改为返回五种业务状态和类型化配网信息。
+* 插件自动选择 AP、Smart+声波、Smart 或声波配网。
+* App 不再传配网模式、热点前缀或热点密码。
+* 增加配网取消、并发保护和统一原生资源清理。

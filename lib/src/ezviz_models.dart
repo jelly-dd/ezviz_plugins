@@ -1,3 +1,241 @@
+/// 探测设备后 App 需要处理的五种状态。
+enum EzvizDeviceStatus {
+  retry,
+  add,
+  connectNetwork,
+  alreadyAdded,
+  addedByOtherAccount,
+}
+
+/// 插件根据设备能力自动选定的配网方式。
+enum EzvizProvisioningMethod { ap, smartAndSoundWave, smart, soundWave }
+
+/// 萤石设备二维码中携带的设备身份信息。
+class EzvizDeviceQrInfo {
+  final String source;
+  final String deviceSerial;
+  final String verifyCode;
+  final String deviceType;
+
+  const EzvizDeviceQrInfo({
+    required this.source,
+    required this.deviceSerial,
+    required this.verifyCode,
+    this.deviceType = '',
+  });
+}
+
+/// 配网前由 App 使用的必要信息。
+class EzvizProvisioningInfo {
+  final EzvizProvisioningMethod method;
+  final bool supports5G;
+  final bool requiresManualHotspotConnection;
+  final String? hotspotSsid;
+  final String? hotspotPassword;
+
+  const EzvizProvisioningInfo({
+    required this.method,
+    this.supports5G = false,
+    this.requiresManualHotspotConnection = false,
+    this.hotspotSsid,
+    this.hotspotPassword,
+  });
+
+  factory EzvizProvisioningInfo.fromMap(Map<String, dynamic> map) {
+    return EzvizProvisioningInfo(
+      method: EzvizProvisioningMethod.values.byName(map['method'] as String),
+      supports5G: map['supports5G'] as bool? ?? false,
+      requiresManualHotspotConnection:
+          map['requiresManualHotspotConnection'] as bool? ?? false,
+      hotspotSsid: map['hotspotSsid'] as String?,
+      hotspotPassword: map['hotspotPassword'] as String?,
+    );
+  }
+}
+
+/// [EzvizControl.probeDeviceInfo] 的黑盒探测结果。
+class EzvizProbeResult {
+  final EzvizDeviceStatus status;
+  final int? sdkErrorCode;
+  final String? message;
+  final EzvizProvisioningInfo? provisioning;
+
+  const EzvizProbeResult({
+    required this.status,
+    this.sdkErrorCode,
+    this.message,
+    this.provisioning,
+  });
+
+  factory EzvizProbeResult.fromMap(Map<String, dynamic> map) {
+    final provisioning = map['provisioning'];
+    return EzvizProbeResult(
+      status: EzvizDeviceStatus.values.byName(map['status'] as String),
+      sdkErrorCode: (map['sdkErrorCode'] as num?)?.toInt(),
+      message: map['message'] as String?,
+      provisioning: provisioning is Map
+          ? EzvizProvisioningInfo.fromMap(
+              provisioning.map((key, value) => MapEntry(key.toString(), value)),
+            )
+          : null,
+    );
+  }
+}
+
+/// 配网并绑定成功后的设备信息。
+class EzvizConfigResult {
+  final String deviceSerial;
+  final String deviceName;
+  final EzvizProvisioningMethod method;
+
+  const EzvizConfigResult({
+    required this.deviceSerial,
+    required this.deviceName,
+    required this.method,
+  });
+
+  factory EzvizConfigResult.fromMap(Map<String, dynamic> map) {
+    return EzvizConfigResult(
+      deviceSerial: map['deviceSerial'] as String? ?? '',
+      deviceName: map['deviceName'] as String? ?? '',
+      method: EzvizProvisioningMethod.values.byName(
+        map['provisioningMethod'] as String,
+      ),
+    );
+  }
+}
+
+enum EzvizTalkCapability { none, halfDuplex, fullDuplex }
+
+/// 设备或通道由 EZOpenSDK 返回的标准能力集。
+class EzvizCapabilities {
+  final EzvizTalkCapability talk;
+  final bool ptz;
+  final bool zoom;
+  final bool defence;
+  final bool defencePlan;
+  final bool upgrade;
+  final bool mirrorCenter;
+  final bool audioOnOff;
+  final bool soundWave;
+  final bool ptzFocus;
+  final bool playbackRate;
+  final bool directInnerRelaySpeed;
+  final bool sdRecordDownload;
+  final bool sdCover;
+  final bool multiChannel;
+  final bool autoVideoLevel;
+  final bool videoMeeting;
+
+  const EzvizCapabilities({
+    this.talk = EzvizTalkCapability.none,
+    this.ptz = false,
+    this.zoom = false,
+    this.defence = false,
+    this.defencePlan = false,
+    this.upgrade = false,
+    this.mirrorCenter = false,
+    this.audioOnOff = false,
+    this.soundWave = false,
+    this.ptzFocus = false,
+    this.playbackRate = false,
+    this.directInnerRelaySpeed = false,
+    this.sdRecordDownload = false,
+    this.sdCover = false,
+    this.multiChannel = false,
+    this.autoVideoLevel = false,
+    this.videoMeeting = false,
+  });
+
+  factory EzvizCapabilities.fromMap(Map<String, dynamic> map) {
+    return EzvizCapabilities(
+      talk: EzvizTalkCapability.values.byName(
+        map['talk'] as String? ?? EzvizTalkCapability.none.name,
+      ),
+      ptz: map['ptz'] as bool? ?? false,
+      zoom: map['zoom'] as bool? ?? false,
+      defence: map['defence'] as bool? ?? false,
+      defencePlan: map['defencePlan'] as bool? ?? false,
+      upgrade: map['upgrade'] as bool? ?? false,
+      mirrorCenter: map['mirrorCenter'] as bool? ?? false,
+      audioOnOff: map['audioOnOff'] as bool? ?? false,
+      soundWave: map['soundWave'] as bool? ?? false,
+      ptzFocus: map['ptzFocus'] as bool? ?? false,
+      playbackRate: map['playbackRate'] as bool? ?? false,
+      directInnerRelaySpeed: map['directInnerRelaySpeed'] as bool? ?? false,
+      sdRecordDownload: map['sdRecordDownload'] as bool? ?? false,
+      sdCover: map['sdCover'] as bool? ?? false,
+      multiChannel: map['multiChannel'] as bool? ?? false,
+      autoVideoLevel: map['autoVideoLevel'] as bool? ?? false,
+      videoMeeting: map['videoMeeting'] as bool? ?? false,
+    );
+  }
+}
+
+class EzvizVideoQuality {
+  final String name;
+  final int videoLevel;
+  final int streamType;
+
+  const EzvizVideoQuality({
+    required this.name,
+    required this.videoLevel,
+    required this.streamType,
+  });
+
+  factory EzvizVideoQuality.fromMap(Map<String, dynamic> map) {
+    return EzvizVideoQuality(
+      name: map['name'] as String? ?? '',
+      videoLevel: (map['videoLevel'] as num?)?.toInt() ?? 0,
+      streamType: (map['streamType'] as num?)?.toInt() ?? 0,
+    );
+  }
+}
+
+/// 一个可独立播放和控制的设备通道。
+class EzvizCamera {
+  final String deviceSerial;
+  final int cameraNo;
+  final String cameraName;
+  final String? cameraCover;
+  final bool shared;
+  final int permission;
+  final int? videoLevel;
+  final List<EzvizVideoQuality> videoQualities;
+  final EzvizCapabilities capabilities;
+
+  const EzvizCamera({
+    required this.deviceSerial,
+    required this.cameraNo,
+    required this.cameraName,
+    this.cameraCover,
+    this.shared = false,
+    this.permission = 0,
+    this.videoLevel,
+    this.videoQualities = const [],
+    this.capabilities = const EzvizCapabilities(),
+  });
+
+  factory EzvizCamera.fromMap(Map<String, dynamic> map) {
+    final qualities = (map['videoQualities'] as List?) ?? const [];
+    return EzvizCamera(
+      deviceSerial: map['deviceSerial'] as String? ?? '',
+      cameraNo: (map['cameraNo'] as num?)?.toInt() ?? 1,
+      cameraName: map['cameraName'] as String? ?? '',
+      cameraCover: map['cameraCover'] as String?,
+      shared: map['isShared'] as bool? ?? false,
+      permission: (map['permission'] as num?)?.toInt() ?? 0,
+      videoLevel: (map['videoLevel'] as num?)?.toInt(),
+      videoQualities: qualities
+          .map((item) => EzvizVideoQuality.fromMap(_stringKeyMap(item)))
+          .toList(growable: false),
+      capabilities: EzvizCapabilities.fromMap(
+        _stringKeyMap(map['capabilities']),
+      ),
+    );
+  }
+}
+
 /// 萤石设备（简化模型，最小闭环只取展示所需字段）。
 class EzvizDevice {
   /// 设备序列号，作为设备唯一标识，所有控制/删除都用它。
@@ -9,11 +247,20 @@ class EzvizDevice {
   /// 是否在线（原生侧由 status==1 换算）。
   final bool online;
 
+  /// 实时视频是否需要设备验证码解密。
+  final bool encrypted;
+
   /// 设备型号。
   final String? deviceType;
 
   /// 通道数（摄像头数量）。
   final int cameraNum;
+
+  /// SDK 返回的可播放通道列表，播放和控制必须使用其中的 [EzvizCamera.cameraNo]。
+  final List<EzvizCamera> cameras;
+
+  /// 设备级能力；实际通道控制优先使用 [EzvizCamera.capabilities]。
+  final EzvizCapabilities capabilities;
 
   /// 布防状态。
   final int defence;
@@ -25,19 +272,30 @@ class EzvizDevice {
     required this.deviceSerial,
     required this.deviceName,
     this.online = false,
+    this.encrypted = false,
     this.deviceType,
     this.cameraNum = 1,
+    this.cameras = const [],
+    this.capabilities = const EzvizCapabilities(),
     this.defence = 0,
     this.isSupportSoundWave = false,
   });
 
   factory EzvizDevice.fromMap(Map<String, dynamic> map) {
+    final cameras = ((map['cameras'] as List?) ?? const [])
+        .map((item) => EzvizCamera.fromMap(_stringKeyMap(item)))
+        .toList(growable: false);
     return EzvizDevice(
       deviceSerial: map['deviceSerial'] as String? ?? '',
       deviceName: map['deviceName'] as String? ?? '未命名设备',
       online: map['isOnline'] as bool? ?? false,
+      encrypted: map['isEncrypted'] as bool? ?? false,
       deviceType: map['deviceType'] as String?,
-      cameraNum: (map['cameraNum'] as num?)?.toInt() ?? 1,
+      cameraNum: (map['cameraNum'] as num?)?.toInt() ?? cameras.length,
+      cameras: cameras,
+      capabilities: EzvizCapabilities.fromMap(
+        _stringKeyMap(map['capabilities']),
+      ),
       defence: (map['defence'] as num?)?.toInt() ?? 0,
       isSupportSoundWave: map['isSupportSoundWave'] as bool? ?? false,
     );
@@ -46,4 +304,9 @@ class EzvizDevice {
   @override
   String toString() =>
       'EzvizDevice(serial: $deviceSerial, name: $deviceName, online: $online)';
+}
+
+Map<String, dynamic> _stringKeyMap(Object? value) {
+  if (value is! Map) return const {};
+  return value.map((key, item) => MapEntry(key.toString(), item));
 }

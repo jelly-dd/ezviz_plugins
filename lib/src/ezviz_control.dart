@@ -23,6 +23,37 @@ class EzvizControl {
     'com.example.matter/ezviz',
   );
 
+  /// 解析萤石设备二维码，返回序列号、验证码和设备型号。
+  ///
+  /// 官方二维码字段使用回车或换行分隔：
+  /// `网址\r设备序列号\r验证码\r设备型号`。
+  EzvizDeviceQrInfo parseDeviceQrCode(String rawValue) {
+    final fields = rawValue
+        .split(RegExp(r'\r\n|\n\r|\r|\n'))
+        .map((value) => value.trim())
+        .where((value) => value.isNotEmpty)
+        .toList(growable: false);
+    if (fields.length < 3) {
+      throw const EzvizException('invalid_device_qr', '二维码不包含设备序列号和验证码');
+    }
+
+    final deviceSerial = fields[1].toUpperCase();
+    final verifyCode = fields[2].toUpperCase();
+    if (!RegExp(r'^[A-Z0-9]{9}$').hasMatch(deviceSerial)) {
+      throw const EzvizException('invalid_device_qr', '二维码中的设备序列号格式错误');
+    }
+    if (!RegExp(r'^[A-Z0-9]{6}$').hasMatch(verifyCode)) {
+      throw const EzvizException('invalid_device_qr', '二维码中的验证码格式错误');
+    }
+
+    return EzvizDeviceQrInfo(
+      source: fields[0],
+      deviceSerial: deviceSerial,
+      verifyCode: verifyCode,
+      deviceType: fields.length > 3 ? fields[3] : '',
+    );
+  }
+
   /// 初始化萤石 SDK（幂等）。取代宿主 Application.onCreate 里的 EZOpenSDK.initLib。
   /// AppKey 由宿主 AndroidManifest 里的 `EZVIZ_APP_KEY` meta-data 提供。
   Future<Map<String, dynamic>> init() async {
@@ -90,19 +121,20 @@ class EzvizControl {
         .toList(growable: false);
   }
 
-  /// 查询设备能力集（用于获取热点前缀）。
-  /// 返回 Map，包含：hotspotPrefix、supportAP、supportWifi、support5G
-  /// ⚠️ 需要设备已联网或处于配网状态；未联网设备可能返回 null。
-  Future<Map<String, dynamic>?> probeDeviceInfo(
+  /// 探测设备并返回 App 可直接消费的五种状态。
+  ///
+  /// 需要配网时，[EzvizProbeResult.provisioning] 包含插件自动选定的方式。
+  Future<EzvizProbeResult> probeDeviceInfo(
     String deviceSerial, {
+    String verifyCode = '',
     String deviceType = '',
   }) async {
     final result = await _invoke('probeDeviceInfo', {
       'deviceSerial': deviceSerial,
+      'verifyCode': verifyCode,
       'deviceType': deviceType,
     });
-    if (result == null) return null;
-    return _asMap(result);
+    return EzvizProbeResult.fromMap(_asMap(result));
   }
 
   /// 读取手机当前连接的 WiFi SSID。
@@ -152,38 +184,29 @@ class EzvizControl {
     await _invoke('logout', const {});
   }
 
-  /// 发起 WiFi 配网，返回配网成功的设备信息 map。
+  /// 发起 WiFi 配网并绑定设备。
   ///
-  /// **AP 模式（useAP=true）使用前提：**
-  /// - 必须先调用 [getCurrentWifiSsid] 校验手机已连接设备热点
-  /// - 热点名称应为 `hotspotPrefix_deviceSerial`（如 `EZVIZ_Bk8898885`）
-  /// - 未连接设备热点时调用会导致 90 秒超时
-  ///
-  /// [hotspotSsid]/[hotspotPwd]：设备AP热点名和密码，从 probeDeviceInfo 的 hotspotPrefix 构造
-  ///   hotspotSsid = hotspotPrefix + '_' + deviceSerial
-  ///   hotspotPwd  = hotspotPrefix + '_' + verifyCode （或空字符串）
-  /// 不传时 SDK 自动用 EZVIZ_序列号 作为热点名。
-  Future<Map<String, dynamic>> startConfigWifi({
+  /// 插件会重新探测能力并自动选择 AP、Smart+声波、Smart 或声波配网。
+  Future<EzvizConfigResult> startConfigWifi({
     required String ssid,
     required String password,
     required String deviceSerial,
     required String verifyCode,
-    bool useAP = true,
-    int timeout = 60,
-    String? hotspotSsid,
-    String? hotspotPwd,
+    String deviceType = '',
   }) async {
     final result = await _invoke('startConfigWifi', {
       'ssid': ssid,
       'password': password,
       'deviceSerial': deviceSerial,
       'verifyCode': verifyCode,
-      'useAP': useAP,
-      'timeout': timeout,
-      'hotspotSsid': ?hotspotSsid,
-      'hotspotPwd': ?hotspotPwd,
+      'deviceType': deviceType,
     });
-    return _asMap(result);
+    return EzvizConfigResult.fromMap(_asMap(result));
+  }
+
+  /// 停止当前配网流程。
+  Future<void> stopConfigWifi() async {
+    await _invoke('stopConfigWifi', const {});
   }
 
   Future<Object?> _invoke(String method, Map<String, dynamic> args) async {

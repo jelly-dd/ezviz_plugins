@@ -94,20 +94,44 @@ await ezviz.logout();
 ### WiFi 配网
 
 ```dart
-// AP 模式（推荐，兼容性好）：useAP=true
-// EZ 模式（声波/SmartConfig）：useAP=false
-final result = await ezviz.startConfigWifi(
-  ssid: 'MyWifi',
-  password: 'wifi_password',
-  deviceSerial: 'ABC123456',
+final probe = await ezviz.probeDeviceInfo(
+  'ABC123456',
   verifyCode: 'ABCDEF',
-  useAP: true,
 );
-print('配网成功：${result['deviceSerial']}');
+
+switch (probe.status) {
+  case EzvizDeviceStatus.retry:
+    // 网络或服务异常，展示重试入口。
+    break;
+  case EzvizDeviceStatus.add:
+    await ezviz.addDevice(
+      deviceSerial: 'ABC123456',
+      verifyCode: 'ABCDEF',
+    );
+    break;
+  case EzvizDeviceStatus.connectNetwork:
+    final result = await ezviz.startConfigWifi(
+      ssid: 'MyWifi',
+      password: 'wifi_password',
+      deviceSerial: 'ABC123456',
+      verifyCode: 'ABCDEF',
+    );
+    print('配网成功：${result.deviceSerial}，方式：${result.method.name}');
+    break;
+  case EzvizDeviceStatus.alreadyAdded:
+    // 已在当前账号，无需处理。
+    break;
+  case EzvizDeviceStatus.addedByOtherAccount:
+    // 提示设备已被其他账号添加。
+    break;
+}
 
 // 中途取消配网
 await ezviz.stopConfigWifi();
 ```
+
+插件按 `AP > Smart+声波 > Smart > 声波` 自动选择配网方式。App 不传模式、
+不解析 SDK 错误码，也不拼接设备热点信息。
 
 ### 实时画面播放
 
@@ -167,11 +191,11 @@ final token = await ezviz.exchangeAccessTokenForTest(
 | `setAccessToken(token)` | 把 accessToken 写入 SDK |
 | `exchangeAccessTokenForTest({appKey, appSecret})` | ⚠️ 仅测试，端上换 token |
 | `getDeviceList({page, size})` | 返回 `List<EzvizDevice>` |
-| `probeDeviceInfo(deviceSerial)` | 查询单个设备信息，未找到返回 null |
+| `probeDeviceInfo(deviceSerial, {verifyCode, deviceType})` | 返回五状态 `EzvizProbeResult` |
 | `addDevice({deviceSerial, verifyCode})` | 绑定设备 |
 | `deleteDevice(deviceSerial)` | 解绑设备 |
 | `controlPtz({deviceSerial, direction, action})` | 云台控制 |
-| `startConfigWifi({ssid, password, deviceSerial, verifyCode, useAP})` | WiFi 配网 |
+| `startConfigWifi({ssid, password, deviceSerial, verifyCode, deviceType})` | 自动选择方式并完成配网、绑定 |
 | `stopConfigWifi()` | 停止/取消配网 |
 | `logout()` | 退出登录，清空本地 token |
 
@@ -182,14 +206,44 @@ final token = await ezviz.exchangeAccessTokenForTest(
 
 ## 主要数据模型
 
+**`EzvizProbeResult`** — 黑盒设备探测结果：
+- `status` — `retry` / `add` / `connectNetwork` / `alreadyAdded` / `addedByOtherAccount`
+- `sdkErrorCode`、`message` — 日志和重试提示信息
+- `provisioning` — 仅 `connectNetwork` 状态提供，由插件选定配网方式
+
+**`EzvizProvisioningInfo`** — App 配网前需要的信息：
+- `method` — `ap` / `smartAndSoundWave` / `smart` / `soundWave`
+- `supports5G` — 设备是否支持 5 GHz WiFi
+- `requiresManualHotspotConnection` — Android 当前固定为 `false`，热点由插件自动连接
+- `hotspotSsid`、`hotspotPassword` — 插件根据设备能力生成的 AP 热点信息
+
+**`EzvizConfigResult`** — 配网并绑定成功后的设备序列号、名称和实际配网方式
+
 **`EzvizDevice`** — 设备基本信息：
 - `deviceSerial` — 序列号，控制/删除操作的唯一标识
 - `deviceName` — 设备名称
 - `online` — 是否在线
+- `encrypted` — 实时视频是否需要设备验证码
 - `deviceType` — 设备型号
 - `cameraNum` — 通道数（摄像头数量）
+- `cameras` — SDK 返回的通道列表，播放和控制使用其中的 `cameraNo`
+- `capabilities` — 设备级标准能力集
 - `defence` — 布防状态
 - `isSupportSoundWave` — 是否支持声波（EZ）配网
+
+**`EzvizCamera`** — 可独立播放和控制的通道：
+- `cameraNo`、`cameraName` — SDK 返回的真实通道号和名称
+- `videoLevel`、`videoQualities` — 当前及可用清晰度
+- `shared`、`permission` — 分享与通道权限信息
+- `capabilities` — 通道实际能力，控制按钮应优先读取这里
+
+**`EzvizCapabilities`** — SDK 标准能力集：
+- `talk` — `none` / `halfDuplex` / `fullDuplex`
+- `ptz`、`zoom`、`ptzFocus` — 云台和变焦能力
+- `defence`、`defencePlan`、`upgrade` — 设备管理能力
+- `audioOnOff`、`soundWave`、`videoMeeting` — 音频及通话能力
+- `playbackRate`、`sdRecordDownload`、`sdCover` — 回放能力
+- `multiChannel`、`autoVideoLevel` — 多镜头和自动清晰度能力
 
 **`EzvizPlayer`** — 实时画面 Widget（`StatefulWidget`）：
 - 通过 `AndroidView` 嵌入原生 `EZPlayer` + `SurfaceView`
@@ -197,4 +251,3 @@ final token = await ezviz.exchangeAccessTokenForTest(
 - `autoPlay: true` 时 Surface 就绪后自动开始播放
 
 **`EzvizException`** — 统一异常：`code`（原生错误码）、`message`
-

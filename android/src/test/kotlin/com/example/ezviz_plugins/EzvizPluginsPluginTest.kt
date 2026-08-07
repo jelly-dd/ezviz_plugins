@@ -1,27 +1,29 @@
 package com.example.ezviz_plugins
 
-import io.flutter.plugin.common.MethodCall
-import io.flutter.plugin.common.MethodChannel
-import org.mockito.Mockito
+import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.Test
-
-/*
- * This demonstrates a simple unit test of the Kotlin portion of this plugin's implementation.
- *
- * Once you have built the plugin's example app, you can run these tests from the command
- * line by running `./gradlew testDebugUnitTest` in the `example/android/` directory, or
- * you can run them directly from IDEs that support JUnit such as Android Studio.
- */
 
 internal class EzvizPluginsPluginTest {
     @Test
-    fun onMethodCall_getPlatformVersion_returnsExpectedValue() {
-        val plugin = EzvizPluginsPlugin()
+    fun probeErrorsAreMappedToFiveBusinessStates() {
+        assertEquals("add", EzvizPluginsPlugin.classifyProbeStatus(null))
+        assertEquals("add", EzvizPluginsPlugin.classifyProbeStatus(120021))
+        assertEquals("connectNetwork", EzvizPluginsPlugin.classifyProbeStatus(120023))
+        assertEquals("connectNetwork", EzvizPluginsPlugin.classifyProbeStatus(120002))
+        assertEquals("connectNetwork", EzvizPluginsPlugin.classifyProbeStatus(120029))
+        assertEquals("alreadyAdded", EzvizPluginsPlugin.classifyProbeStatus(120020))
+        assertEquals("addedByOtherAccount", EzvizPluginsPlugin.classifyProbeStatus(120022))
+        assertEquals("addedByOtherAccount", EzvizPluginsPlugin.classifyProbeStatus(120024))
+        assertEquals("retry", EzvizPluginsPlugin.classifyProbeStatus(120006))
+    }
 
-        val call = MethodCall("getPlatformVersion", null)
-        val mockResult: MethodChannel.Result = Mockito.mock(MethodChannel.Result::class.java)
-        plugin.onMethodCall(call, mockResult)
-
-        Mockito.verify(mockResult).success("Android " + android.os.Build.VERSION.RELEASE)
+    @Test
+    fun provisioningMethodUsesConfiguredPriority() {
+        assertEquals("ap", EzvizPluginsPlugin.selectProvisioningMethod(2, 3, 1))
+        assertEquals("smartAndSoundWave", EzvizPluginsPlugin.selectProvisioningMethod(0, 3, 1))
+        assertEquals("smart", EzvizPluginsPlugin.selectProvisioningMethod(0, 3, 0))
+        assertEquals("soundWave", EzvizPluginsPlugin.selectProvisioningMethod(0, 0, 1))
+        assertNull(EzvizPluginsPlugin.selectProvisioningMethod(0, 0, 0))
     }
 }

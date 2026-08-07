@@ -1,19 +1,23 @@
 package com.example.ezviz_plugins
 
+import android.Manifest
 import android.app.Activity
 import android.app.Application
 import android.content.Context
+import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import com.ezviz.sdk.configwifi.EZConfigWifiErrorEnum
 import com.ezviz.sdk.configwifi.EZConfigWifiInfoEnum
-import com.ezviz.sdk.configwifi.EZWiFiConfig
-import com.ezviz.sdk.configwifi.common.EZConfigWifiCallback
 import com.videogo.openapi.EZConstants
 import com.videogo.openapi.EZOpenSDK
+import com.videogo.openapi.EZOpenSDKListener
+import com.videogo.openapi.bean.EZCameraInfo
 import com.videogo.openapi.bean.EZDeviceInfo
+import com.videogo.openapi.bean.EZSubDeviceInfo
+import com.videogo.exception.BaseException
 import com.videogo.wificonfig.APWifiConfig
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
@@ -22,6 +26,7 @@ import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler
 import io.flutter.plugin.common.MethodChannel.Result
+import io.flutter.plugin.common.PluginRegistry
 import java.util.concurrent.Executors
 
 /**
@@ -37,11 +42,13 @@ import java.util.concurrent.Executors
 class EzvizPluginsPlugin :
     FlutterPlugin,
     ActivityAware,
-    MethodCallHandler {
+    MethodCallHandler,
+    PluginRegistry.RequestPermissionsResultListener {
 
     private lateinit var channel: MethodChannel
     private var appContext: android.content.Context? = null
     private var activity: Activity? = null
+    private var activityBinding: ActivityPluginBinding? = null
 
     private var initialized = false
     private var initError: String? = null
@@ -54,7 +61,10 @@ class EzvizPluginsPlugin :
     // 配网绑定轮询状态：收到 code=54(WiFi已发给设备) 后主动轮询 addDevice，
     // 不依赖 SDK 的 code=60(平台注册) 回调（该回调在网络切换场景下不可靠）。
     private val configDone = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val configInProgress = java.util.concurrent.atomic.AtomicBoolean(false)
     private var bindPollStarted = false
+    private var activeProvisioningMethod: String? = null
+    private var pendingWifiPermissionAction: (() -> Unit)? = null
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         appContext = binding.applicationContext
@@ -69,6 +79,11 @@ class EzvizPluginsPlugin :
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         channel.setMethodCallHandler(null)
+        configDone.set(true)
+        configInProgress.set(false)
+        stopNativeConfig()
+        releaseNetworkBinding()
+        pendingWifiPermissionAction = null
         pendingConfigResult?.error("config_cancelled", "插件已卸载", null)
         pendingConfigResult = null
         io.shutdown()
@@ -77,18 +92,44 @@ class EzvizPluginsPlugin :
 
     override fun onAttachedToActivity(binding: ActivityPluginBinding) {
         activity = binding.activity
+        activityBinding = binding
+        binding.addRequestPermissionsResultListener(this)
     }
 
     override fun onDetachedFromActivityForConfigChanges() {
+        activityBinding?.removeRequestPermissionsResultListener(this)
+        activityBinding = null
         activity = null
     }
 
     override fun onReattachedToActivityForConfigChanges(binding: ActivityPluginBinding) {
         activity = binding.activity
+        activityBinding = binding
+        binding.addRequestPermissionsResultListener(this)
     }
 
     override fun onDetachedFromActivity() {
+        activityBinding?.removeRequestPermissionsResultListener(this)
+        activityBinding = null
         activity = null
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ): Boolean {
+        if (requestCode != WIFI_PERMISSION_REQUEST_CODE) return false
+        val action = pendingWifiPermissionAction
+        pendingWifiPermissionAction = null
+        val granted = grantResults.isNotEmpty() &&
+            grantResults.all { it == PackageManager.PERMISSION_GRANTED }
+        if (!granted) {
+            failConfig("permission_denied", "自动连接设备热点需要 WiFi 扫描和定位权限")
+        } else if (action != null && configInProgress.get() && !configDone.get()) {
+            action()
+        }
+        return true
     }
 
     override fun onMethodCall(call: MethodCall, result: Result) {
@@ -103,6 +144,7 @@ class EzvizPluginsPlugin :
             "controlPtz" -> controlPtz(call, result)
             "getCurrentWifiSsid" -> getCurrentWifiSsid(result)
             "startConfigWifi" -> startConfigWifi(call, result)
+            "stopConfigWifi" -> stopConfigWifi(result)
             "logout" -> logout(result)
             else -> result.notImplemented()
         }
@@ -172,27 +214,86 @@ class EzvizPluginsPlugin :
 
     private fun probeDeviceInfo(call: MethodCall, result: Result) {
         val serial = call.argument<String>("deviceSerial")
+        val verifyCode = call.argument<String>("verifyCode") ?: ""
         val deviceType = call.argument<String>("deviceType") ?: ""
         if (serial.isNullOrEmpty()) {
             result.error("bad_args", "deviceSerial 不能为空", null)
             return
         }
         async(result) {
-            // probeDeviceInfo 可查询未绑定设备的能力集（含热点前缀）
-            val probeResult = EZOpenSDK.getInstance().probeDeviceInfo(serial, deviceType)
-            val probe = probeResult?.getEZProbeDeviceInfo()
-            val hotspotPrefix = when (probe?.deviceHotSpot) {
-                1 -> "SoftAP"
-                2 -> "CAMGO"
-                else -> "EZVIZ"
+            probeDevice(serial, verifyCode, deviceType).toMap()
+        }
+    }
+
+    private data class DeviceProbe(
+        val status: String,
+        val sdkErrorCode: Int?,
+        val message: String?,
+        val provisioningMethod: String?,
+        val supports5G: Boolean,
+        val hotspotSsid: String?,
+        val hotspotPassword: String?,
+    ) {
+        fun toMap(): Map<String, Any?> {
+            val provisioning = provisioningMethod?.let {
+                mapOf(
+                    "method" to it,
+                    "supports5G" to supports5G,
+                    "requiresManualHotspotConnection" to false,
+                    "hotspotSsid" to hotspotSsid,
+                    "hotspotPassword" to hotspotPassword,
+                )
             }
-            mapOf(
-                "hotspotPrefix" to hotspotPrefix,
-                "supportAP" to (probe?.supportAP ?: 0),
-                "supportWifi" to (probe?.supportWifi ?: 0),
-                "support5G" to (probe?.isSupport5GWiFi ?: false),
+            return mapOf(
+                "status" to status,
+                "sdkErrorCode" to sdkErrorCode,
+                "message" to message,
+                "provisioning" to provisioning,
             )
         }
+    }
+
+    private fun probeDevice(
+        deviceSerial: String,
+        verifyCode: String,
+        deviceType: String,
+    ): DeviceProbe {
+        val result = EZOpenSDK.getInstance().probeDeviceInfo(deviceSerial, deviceType)
+        if (result == null) {
+            return DeviceProbe(STATUS_RETRY, null, "设备探测无返回结果", null, false, null, null)
+        }
+
+        val probe = result.ezProbeDeviceInfo
+        val error = result.baseException
+        val errorCode = error?.errorCode
+        val status = classifyProbeStatus(errorCode)
+        val method = if (status == STATUS_CONNECT_NETWORK) {
+            selectProvisioningMethod(
+                supportAP = probe?.supportAP ?: 0,
+                supportWifi = probe?.supportWifi ?: 0,
+                supportSoundWave = probe?.supportSoundWave ?: 0,
+            )
+        } else {
+            null
+        }
+        val hotspotPrefix = when (probe?.deviceHotSpot) {
+            1 -> "SoftAP"
+            2 -> "CAMGO"
+            else -> "EZVIZ"
+        }
+        return DeviceProbe(
+            status = status,
+            sdkErrorCode = errorCode,
+            message = error?.message,
+            provisioningMethod = method,
+            supports5G = probe?.isSupport5GWiFi ?: false,
+            hotspotSsid = if (method == METHOD_AP) "${hotspotPrefix}_$deviceSerial" else null,
+            hotspotPassword = if (method == METHOD_AP && verifyCode.isNotEmpty()) {
+                "${hotspotPrefix}_$verifyCode"
+            } else {
+                null
+            },
+        )
     }
 
     private fun addDevice(call: MethodCall, result: Result) {
@@ -203,8 +304,12 @@ class EzvizPluginsPlugin :
             return
         }
         async(result) {
-            EZOpenSDK.getInstance().addDevice(serial, verifyCode)
-            true
+            try {
+                EZOpenSDK.getInstance().addDevice(serial, verifyCode)
+                true
+            } catch (e: BaseException) {
+                if (e.errorCode == 120020) true else throw e
+            }
         }
     }
 
@@ -280,10 +385,7 @@ class EzvizPluginsPlugin :
         val password = call.argument<String>("password") ?: ""
         val deviceSerial = call.argument<String>("deviceSerial")
         val verifyCode = call.argument<String>("verifyCode")
-        val useAP = call.argument<Boolean>("useAP") ?: true
-        // 设备热点信息（由调用方根据 probeDeviceInfo 得到的 hotspotPrefix 构造，可为 null 使用默认值）
-        val hotspotSsid = call.argument<String>("hotspotSsid")
-        val hotspotPwd = call.argument<String>("hotspotPwd")
+        val deviceType = call.argument<String>("deviceType") ?: ""
         if (ssid.isNullOrEmpty() || deviceSerial.isNullOrEmpty() || verifyCode.isNullOrEmpty()) {
             result.error("bad_args", "ssid/deviceSerial/verifyCode 不能为空", null)
             return
@@ -292,159 +394,311 @@ class EzvizPluginsPlugin :
             result.error("no_context", "配网需要 Activity 上下文", null)
             return
         }
-        
-        // 重置配网状态
+        if (!configInProgress.compareAndSet(false, true)) {
+            result.error("config_in_progress", "已有设备正在配网", null)
+            return
+        }
+
         configDone.set(false)
         bindPollStarted = false
         pendingConfigResult = result
-
-        val apCallback = object : APWifiConfig.APConfigCallback() {
-            override fun onSuccess() {
-                android.util.Log.i("EZConfigWifiCallback", "AP onSuccess: WiFi info sent to device (code=54)")
-                // WiFi信息已发给设备，立即解除热点网络绑定，确保后续 addDevice 轮询能走路由器网络
-                releaseNetworkBinding()
-                android.util.Log.i("EZConfigWifiCallback", "AP: Starting manual bind polling (more reliable than waiting for code=60)")
-                // 不再依赖 SDK 的 code=60 回调（网络切换场景下不可靠），主动轮询绑定
-                if (!bindPollStarted) {
-                    bindPollStarted = true
-                    startBindPolling(deviceSerial, verifyCode)
-                }
-            }
-
-            override fun onInfo(code: Int, message: String?) {
-                // SDK 的 code=60 (CONNECTED_TO_PLATFORM) 回调在网络切换场景下不可靠，
-                // 已改用 onSuccess 后主动轮询 addDevice，此回调仅用于日志记录
-                android.util.Log.i("EZConfigWifiCallback", "AP onInfo: code=$code, message=$message (ignored, using polling instead)")
-            }
-
-            override fun OnError(code: Int) {
-                android.util.Log.e("EZConfigWifiCallback", "AP OnError: code=$code")
-                android.util.Log.e("EZConfigWifiCallback", "AP OnError: known codes - PHONE_NOT_CONNECTED=${EZConfigWifiErrorEnum.PHONE_NOT_CONNECTED_TO_TARGET_WIFI.code}, TIMEOUT=${EZConfigWifiErrorEnum.CONFIG_TIMEOUT.code}, USER_REFUSED=${EZConfigWifiErrorEnum.USER_REFUSED_CONNECTION_REQUEST.code}")
-                
-                // 检查轮询是否已完成
-                if (configDone.get()) {
-                    android.util.Log.i("EZConfigWifiCallback", "AP OnError: bind polling already completed, ignoring error code=$code")
-                    return
-                }
-                
-                // Demo: 111（手机WiFi变化）忽略，不做处理
-                if (code == EZConfigWifiErrorEnum.PHONE_NOT_CONNECTED_TO_TARGET_WIFI.code) {
-                    android.util.Log.i("EZConfigWifiCallback", "Ignore error 111: phone WiFi changed during config (expected behavior)")
-                    return
-                }
-                // Demo: 15（90秒超时）→ onTimeout → failedToConfig（跳转手动连接页面重试）
-                // 我们返回 timeout 让 Dart 层引导用户重新连接热点重试
-                if (code == EZConfigWifiErrorEnum.CONFIG_TIMEOUT.code) {
-                    android.util.Log.w("EZConfigWifiCallback", "Config timeout after 90s, stopping polling")
-                    configDone.set(true)
-                    bindPollStarted = false
-                    main.post {
-                        EZOpenSDK.getInstance().stopAPConfigWifiWithSsid()
-                        releaseNetworkBinding()
-                        pendingConfigResult?.error("timeout", "配网超时（90秒），请确认：1.手机已连接设备热点 2.路由器WiFi密码正确", mapOf("code" to 15))
-                        pendingConfigResult = null
-                    }
-                    return
-                }
-                // Demo: USER_REFUSED 用户拒绝连接设备热点（Android 10+）
-                if (code == EZConfigWifiErrorEnum.USER_REFUSED_CONNECTION_REQUEST.code) {
-                    android.util.Log.e("EZConfigWifiCallback", "User refused to connect to device hotspot (Android 10+)")
-                    configDone.set(true)
-                    bindPollStarted = false
-                    main.post {
-                        EZOpenSDK.getInstance().stopAPConfigWifiWithSsid()
-                        releaseNetworkBinding()
-                        pendingConfigResult?.error("user_refused", "用户拒绝连接设备热点", mapOf("code" to code))
-                        pendingConfigResult = null
-                    }
-                    return
-                }
-                // Demo: 其他错误仅记录，我们统一报错给 Dart 层
-                configDone.set(true)
-                bindPollStarted = false
-                main.post {
-                    EZOpenSDK.getInstance().stopAPConfigWifiWithSsid()
-                    val errorMsg = EZConfigWifiErrorEnum.values().find { it.code == code }?.name ?: "UNKNOWN"
-                    pendingConfigResult?.error("config_error", "配网失败: $errorMsg (code=$code)", mapOf("code" to code))
-                    pendingConfigResult = null
-                }
-            }
-        }
-
-        val ezCallback = object : EZConfigWifiCallback() {
-            override fun onInfo(code: Int, message: String?) {
-                super.onInfo(code, message)
-                android.util.Log.i("EZConfigWifiCallback", "code is $code, description is $message")
-                // Demo: 收到 CONNECTED_TO_PLATFORM 才说明设备已注册到平台，此时才绑定
-                if (code == EZConfigWifiInfoEnum.CONNECTED_TO_PLATFORM.code) {
-                    android.util.Log.i("EZConfigWifiCallback", "EZ: device registered to platform, binding...")
-                    // Demo AddDeviceToAccountActivity.tryToAddDevice: 子线程立即 addDevice
-                    io.execute {
-                        val added = tryBindDevice(deviceSerial, verifyCode)
-                        main.post {
-                            stopEzSmartConfig()
-                            finishConfig(added, deviceSerial)
-                        }
-                    }
-                }
-            }
-
-            override fun onError(code: Int, message: String?) {
-                super.onError(code, message)
-                android.util.Log.e("EZConfigWifiCallback", "EZ onError: code=$code, message=$message")
-                main.post {
-                    stopEzSmartConfig()
-                    val errorMsg = message ?: "EZ配网失败 (code=$code)"
-                    pendingConfigResult?.error("config_error", errorMsg, mapOf("code" to code))
-                    pendingConfigResult = null
-                }
-            }
-        }
-
-        main.post {
+        io.execute {
             try {
-                if (useAP) {
-                    // 使用官方推荐的 startAPConfigWifiWithSsid（支持传入设备热点名/密码）
-                    // hotspotSsid/hotspotPwd 为空时 SDK 会自动用 EZVIZ_序列号 作为热点名
-                    // isAutoConnect=false：引导用户手动连接设备热点（对齐 Demo ManualConnectDeviceHotspotActivity）
-                    // Dart 层需在 startConfigWifi 前校验手机已连上设备热点（getCurrentWifiSsid）
-                    EZOpenSDK.getInstance().startAPConfigWifiWithSsid(
-                        ssid, password,
-                        deviceSerial, verifyCode,
-                        hotspotSsid, hotspotPwd,
-                        false, // isAutoConnect=false，用户手动连接热点
-                        apCallback,
+                val probe = probeDevice(deviceSerial, verifyCode, deviceType)
+                if (probe.status != STATUS_CONNECT_NETWORK) {
+                    main.post {
+                        if (!configInProgress.get()) return@post
+                        configInProgress.set(false)
+                        pendingConfigResult = null
+                        result.error(
+                            "device_state_changed",
+                            "设备当前状态为 ${probe.status}，无需或无法配网",
+                            probe.toMap(),
+                        )
+                    }
+                    return@execute
+                }
+                val method = probe.provisioningMethod
+                if (method == null) {
+                    main.post {
+                        if (!configInProgress.get()) return@post
+                        configInProgress.set(false)
+                        pendingConfigResult = null
+                        result.error("unsupported_provisioning", "设备没有可用的配网方式", probe.toMap())
+                    }
+                    return@execute
+                }
+                main.post {
+                    if (!configInProgress.get() || configDone.get()) return@post
+                    activeProvisioningMethod = method
+                    startSelectedConfig(
+                        method = method,
+                        ssid = ssid,
+                        password = password,
+                        deviceSerial = deviceSerial,
+                        verifyCode = verifyCode,
+                        hotspotSsid = probe.hotspotSsid,
+                        hotspotPassword = probe.hotspotPassword,
                     )
-                } else {
-                    val ctx = activity?.applicationContext ?: appContext!!
-                    val wifiConfig = EZWiFiConfig.getInstance(ctx)
-                    wifiConfig.setParams(ssid, password, deviceSerial)
-                    wifiConfig.startSmartConfig()
-                    wifiConfig.startSADPSearchResult(object : com.ezviz.sdk.configwifi.EZWiFiConfigApi.SadpDeviceFoundListener {
-                        override fun onDeviceFound(deviceSerial: String?) {
-                            android.util.Log.i("EZConfigWifiCallback", "EZ SADP onDeviceFound: $deviceSerial")
-                        }
-                    })
-                    // EZ 模式成功/失败通过 ezCallback 的 onInfo/onError 回调
-                    wifiConfig.startAPConfigSearchResult(ezCallback)
                 }
             } catch (e: Throwable) {
-                android.util.Log.e("EzvizPluginsPlugin", "startConfigWifi exception", e)
-                pendingConfigResult?.error("ezviz_error", e.message ?: e.toString(), null)
-                pendingConfigResult = null
+                main.post {
+                    if (!configInProgress.get()) return@post
+                    configInProgress.set(false)
+                    pendingConfigResult = null
+                    result.error("ezviz_error", e.message ?: e.toString(), null)
+                }
             }
         }
     }
 
+    private fun startSelectedConfig(
+        method: String,
+        ssid: String,
+        password: String,
+        deviceSerial: String,
+        verifyCode: String,
+        hotspotSsid: String?,
+        hotspotPassword: String?,
+    ) {
+        try {
+            if (method == METHOD_AP) {
+                runWithWifiScanPermissions {
+                    try {
+                        startApConfig(
+                            ssid,
+                            password,
+                            deviceSerial,
+                            verifyCode,
+                            hotspotSsid,
+                            hotspotPassword,
+                        )
+                    } catch (e: Throwable) {
+                        failConfig("ezviz_error", e.message ?: e.toString())
+                    }
+                }
+            } else {
+                startMixedConfig(method, ssid, password, deviceSerial, verifyCode)
+            }
+        } catch (e: Throwable) {
+            failConfig("ezviz_error", e.message ?: e.toString())
+        }
+    }
+
+    private fun runWithWifiScanPermissions(action: () -> Unit) {
+        val currentActivity = activity
+        if (currentActivity == null) {
+            failConfig("no_context", "自动连接设备热点需要 Activity 上下文")
+            return
+        }
+        val requiredPermissions = buildList {
+            add(Manifest.permission.ACCESS_FINE_LOCATION)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                add(Manifest.permission.NEARBY_WIFI_DEVICES)
+            }
+        }
+        val missingPermissions = requiredPermissions.filter {
+            currentActivity.checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (missingPermissions.isEmpty()) {
+            action()
+            return
+        }
+        pendingWifiPermissionAction = action
+        currentActivity.requestPermissions(
+            missingPermissions.toTypedArray(),
+            WIFI_PERMISSION_REQUEST_CODE,
+        )
+    }
+
+    private fun startApConfig(
+        ssid: String,
+        password: String,
+        deviceSerial: String,
+        verifyCode: String,
+        hotspotSsid: String?,
+        hotspotPassword: String?,
+    ) {
+        val callback = object : APWifiConfig.APConfigCallback() {
+            override fun onSuccess() {
+                releaseNetworkBinding()
+                main.post { startBindPollingOnce(deviceSerial, verifyCode) }
+            }
+
+            override fun onInfo(code: Int, message: String?) {
+                if (code == EZConfigWifiInfoEnum.CONNECTED_TO_PLATFORM.code) {
+                    main.post { startBindPollingOnce(deviceSerial, verifyCode) }
+                }
+            }
+
+            override fun OnError(code: Int) {
+                if (configDone.get() || code == EZConfigWifiErrorEnum.PHONE_NOT_CONNECTED_TO_TARGET_WIFI.code) {
+                    return
+                }
+                val errorCode = when (code) {
+                    EZConfigWifiErrorEnum.CONFIG_TIMEOUT.code -> "timeout"
+                    EZConfigWifiErrorEnum.USER_REFUSED_CONNECTION_REQUEST.code -> "user_refused"
+                    else -> "config_error"
+                }
+                val errorName = EZConfigWifiErrorEnum.values().find { it.code == code }?.name ?: "UNKNOWN"
+                main.post { failConfig(errorCode, "AP 配网失败: $errorName (code=$code)", code) }
+            }
+        }
+        EZOpenSDK.getInstance().startAPConfigWifiWithSsid(
+            ssid,
+            password,
+            deviceSerial,
+            verifyCode,
+            hotspotSsid,
+            hotspotPassword,
+            true,
+            callback,
+        )
+    }
+
+    private fun startMixedConfig(
+        method: String,
+        ssid: String,
+        password: String,
+        deviceSerial: String,
+        verifyCode: String,
+    ) {
+        val mode = when (method) {
+            METHOD_SMART_AND_SOUND_WAVE ->
+                EZConstants.EZWiFiConfigMode.EZWiFiConfigSmart or
+                    EZConstants.EZWiFiConfigMode.EZWiFiConfigWave
+            METHOD_SMART -> EZConstants.EZWiFiConfigMode.EZWiFiConfigSmart
+            METHOD_SOUND_WAVE -> EZConstants.EZWiFiConfigMode.EZWiFiConfigWave
+            else -> throw IllegalArgumentException("未知配网方式: $method")
+        }
+        val callback = object : EZOpenSDKListener.EZStartConfigWifiCallback() {
+            override fun onStartConfigWifiCallback(
+                serial: String?,
+                status: EZConstants.EZWifiConfigStatus?,
+            ) {
+                when (status) {
+                    EZConstants.EZWifiConfigStatus.DEVICE_PLATFORM_REGISTED ->
+                        main.post { startBindPollingOnce(deviceSerial, verifyCode) }
+                    EZConstants.EZWifiConfigStatus.TIME_OUT ->
+                        main.post { failConfig("timeout", "配网超时，请检查 WiFi 信息后重试") }
+                    else -> Unit
+                }
+            }
+        }
+        val ctx = activity?.applicationContext ?: appContext
+            ?: throw IllegalStateException("配网上下文不可用")
+        EZOpenSDK.getInstance().startConfigWifi(ctx, deviceSerial, ssid, password, mode, callback)
+    }
+
+    private fun startBindPollingOnce(deviceSerial: String, verifyCode: String) {
+        if (bindPollStarted || configDone.get()) return
+        bindPollStarted = true
+        startBindPolling(deviceSerial, verifyCode)
+    }
+
+    private fun stopConfigWifi(result: Result) {
+        val pending = pendingConfigResult
+        configDone.set(true)
+        configInProgress.set(false)
+        bindPollStarted = false
+        pendingWifiPermissionAction = null
+        stopNativeConfig()
+        releaseNetworkBinding()
+        pendingConfigResult = null
+        activeProvisioningMethod = null
+        pending?.error("config_cancelled", "配网已取消", null)
+        result.success(true)
+    }
+
     private fun deviceToMap(d: EZDeviceInfo): Map<String, Any?> {
+        val cameraInfos: List<EZCameraInfo> = when {
+            !d.cameraInfoList.isNullOrEmpty() -> d.cameraInfoList
+            !d.subDeviceInfoList.isNullOrEmpty() -> d.subDeviceInfoList
+            else -> emptyList()
+        }
+        val cameras = if (cameraInfos.isNotEmpty()) {
+            cameraInfos.map { cameraToMap(d, it) }
+        } else {
+            (1..d.cameraNum).map { cameraNo ->
+                mapOf(
+                    "deviceSerial" to d.deviceSerial,
+                    "cameraNo" to cameraNo,
+                    "cameraName" to "通道 $cameraNo",
+                    "cameraCover" to null,
+                    "isShared" to false,
+                    "permission" to 0,
+                    "videoLevel" to null,
+                    "videoQualities" to emptyList<Map<String, Any?>>(),
+                    "capabilities" to capabilitiesToMap(d, null),
+                )
+            }
+        }
         return mapOf(
             "deviceSerial" to d.deviceSerial,
             "deviceName" to d.deviceName,
             "isOnline" to (d.status == 1),
+            "isEncrypted" to (d.isEncrypt == 1),
             "deviceType" to d.deviceType,
             "cameraNum" to d.cameraNum,
+            "cameras" to cameras,
+            "capabilities" to capabilitiesToMap(d, null),
             "defence" to d.defence,
             "isSupportSoundWave" to d.isSupportSoundWave(),
+        )
+    }
+
+    private fun cameraToMap(device: EZDeviceInfo, camera: EZCameraInfo): Map<String, Any?> {
+        return mapOf(
+            "deviceSerial" to (camera.deviceSerial ?: device.deviceSerial),
+            "cameraNo" to camera.cameraNo,
+            "cameraName" to camera.cameraName,
+            "cameraCover" to camera.cameraCover,
+            "isShared" to (camera.isShared == 1),
+            "permission" to camera.permission,
+            "videoLevel" to camera.videoLevel?.videoLevel,
+            "videoQualities" to camera.videoQualityInfos.orEmpty().map { quality ->
+                mapOf(
+                    "name" to quality.videoQualityName,
+                    "videoLevel" to quality.videoLevel,
+                    "streamType" to quality.streamType,
+                )
+            },
+            "capabilities" to capabilitiesToMap(device, camera),
+        )
+    }
+
+    private fun capabilitiesToMap(
+        device: EZDeviceInfo,
+        camera: EZCameraInfo?,
+    ): Map<String, Any?> {
+        val subDevice = camera as? EZSubDeviceInfo
+        val talk = subDevice?.isSupportTalk() ?: device.isSupportTalk()
+        val useDeviceOnlyCapabilities = subDevice == null
+        return mapOf(
+            "talk" to when (talk) {
+                EZConstants.EZTalkbackCapability.EZTalkbackFullDuplex -> "fullDuplex"
+                EZConstants.EZTalkbackCapability.EZTalkbackHalfDuplex -> "halfDuplex"
+                else -> "none"
+            },
+            "ptz" to (subDevice?.isSupportPTZ() ?: device.isSupportPTZ()),
+            "zoom" to (subDevice?.isSupportZoom() ?: device.isSupportZoom()),
+            "defence" to (useDeviceOnlyCapabilities && device.isSupportDefence()),
+            "defencePlan" to (useDeviceOnlyCapabilities && device.isSupportDefencePlan()),
+            "upgrade" to (useDeviceOnlyCapabilities && device.isSupportUpgrade()),
+            "mirrorCenter" to (subDevice?.isSupportMirrorCenter() ?: device.isSupportMirrorCenter()),
+            "audioOnOff" to (subDevice?.isSupportAudioOnOff() ?: device.isSupportAudioOnOff()),
+            "soundWave" to (subDevice?.isSupportSoundWave() ?: device.isSupportSoundWave()),
+            "ptzFocus" to (useDeviceOnlyCapabilities && device.isSupportPTZFocus()),
+            "playbackRate" to (subDevice?.isSupportPlaybackRate() ?: device.isSupportPlaybackRate()),
+            "directInnerRelaySpeed" to
+                (subDevice?.isSupportDirectInnerRelaySpeed() ?: device.isSupportDirectInnerRelaySpeed()),
+            "sdRecordDownload" to
+                (subDevice?.isSupportSDRecordDownload() ?: device.isSupportSDRecordDownload()),
+            "sdCover" to (subDevice?.isSupportSdCover() ?: device.isSupportSdCover()),
+            "multiChannel" to (subDevice?.isSupportMultiChannel() ?: device.isSupportMultiChannel()),
+            "autoVideoLevel" to
+                (subDevice?.isSupportDeviceAutoVideolevel() ?: device.isSupportDeviceAutoVideolevel()),
+            "videoMeeting" to (useDeviceOnlyCapabilities && device.isSupportVideoMeeting()),
         )
     }
 
@@ -469,14 +723,14 @@ class EzvizPluginsPlugin :
             EZOpenSDK.getInstance().addDevice(deviceSerial, verifyCode)
             isAddSuccess = true
             android.util.Log.i("EZConfigWifiCallback", "addDevice success")
-        } catch (e: Throwable) {
-            val errMsg = e.message ?: ""
-            android.util.Log.e("EZConfigWifiCallback", "addDevice exception: $errMsg", e)
-            // Demo: 仅"设备已被当前账号添加"(错误码 20020/120020) 视为成功
-            if (errMsg.contains("20020") || errMsg.contains("120020")) {
+        } catch (e: BaseException) {
+            android.util.Log.e("EZConfigWifiCallback", "addDevice error: ${e.errorCode}", e)
+            if (e.errorCode == 120020) {
                 isAddSuccess = true
                 android.util.Log.i("EZConfigWifiCallback", "Device already added to current account, treat as success")
             }
+        } catch (e: Throwable) {
+            android.util.Log.e("EZConfigWifiCallback", "addDevice exception", e)
         }
         return isAddSuccess
     }
@@ -495,21 +749,45 @@ class EzvizPluginsPlugin :
         }
     }
 
-    /**
-     * 停止 EZ 模式配网（需要在主线程调用）。
-     */
-    private fun stopEzSmartConfig() {
-        val ctx = activity?.applicationContext ?: appContext ?: return
-        val wifiConfig = EZWiFiConfig.getInstance(ctx)
-        wifiConfig.stopSmartConfig()
+    private fun stopNativeConfig() {
+        try {
+            EZOpenSDK.getInstance().stopAPConfigWifiWithSsid()
+        } catch (_: Throwable) {
+        }
+        try {
+            EZOpenSDK.getInstance().stopConfigWiFi()
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun failConfig(code: String, message: String, sdkCode: Int? = null) {
+        if (!configDone.compareAndSet(false, true)) return
+        bindPollStarted = false
+        configInProgress.set(false)
+        pendingWifiPermissionAction = null
+        stopNativeConfig()
+        releaseNetworkBinding()
+        pendingConfigResult?.error(code, message, sdkCode?.let { mapOf("code" to it) })
+        pendingConfigResult = null
+        activeProvisioningMethod = null
     }
 
     /**
      * 完成配网流程：获取设备名称并返回结果给 Dart 层（需要在主线程调用）。
      */
     private fun finishConfig(bindSuccess: Boolean, deviceSerial: String) {
+        if (!bindSuccess) {
+            failConfig("bind_error", "设备已配网但绑定失败，请稍后重试")
+            return
+        }
+        if (!configDone.compareAndSet(false, true)) return
+        bindPollStarted = false
+        configInProgress.set(false)
+        pendingWifiPermissionAction = null
+        stopNativeConfig()
+        releaseNetworkBinding()
+        val method = activeProvisioningMethod
         if (bindSuccess) {
-            // Demo: 绑定成功后获取设备名称
             io.execute {
                 var deviceName = ""
                 try {
@@ -521,14 +799,16 @@ class EzvizPluginsPlugin :
                 val finalName = deviceName
                 main.post {
                     pendingConfigResult?.success(
-                        mapOf("deviceSerial" to deviceSerial, "deviceName" to finalName)
+                        mapOf(
+                            "deviceSerial" to deviceSerial,
+                            "deviceName" to finalName,
+                            "provisioningMethod" to method,
+                        )
                     )
                     pendingConfigResult = null
+                    activeProvisioningMethod = null
                 }
             }
-        } else {
-            pendingConfigResult?.error("bind_error", "设备已配网但绑定失败，请稍后在设备列表手动绑定", null)
-            pendingConfigResult = null
         }
     }
 
@@ -556,8 +836,8 @@ class EzvizPluginsPlugin :
             
             val elapsed = System.currentTimeMillis() - startTime
             if (elapsed > maxDuration) {
-                android.util.Log.w("EZConfigWifiCallback", "startBindPolling: exceeded 90s, giving up")
-                return // SDK 的 OnError(code=15) 会处理超时
+                main.post { failConfig("timeout", "配网超时，请检查 WiFi 信息后重试") }
+                return
             }
             
             io.execute {
@@ -566,13 +846,7 @@ class EzvizPluginsPlugin :
                 
                 if (added) {
                     android.util.Log.i("EZConfigWifiCallback", "startBindPolling: bind success at attempt #$attempt")
-                    if (configDone.compareAndSet(false, true)) {
-                        bindPollStarted = false
-                        main.post {
-                            EZOpenSDK.getInstance().stopAPConfigWifiWithSsid()
-                            finishConfig(true, deviceSerial)
-                        }
-                    }
+                    main.post { finishConfig(true, deviceSerial) }
                 } else {
                     // 绑定失败，继续轮询
                     if (!configDone.get()) {
@@ -590,7 +864,42 @@ class EzvizPluginsPlugin :
 
     companion object {
         private const val CHANNEL_NAME = "com.example.matter/ezviz"
+        private const val WIFI_PERMISSION_REQUEST_CODE = 0xE217
         internal const val PLAYER_VIEW_TYPE = "ezviz_player_view"
+
+        private const val STATUS_RETRY = "retry"
+        private const val STATUS_ADD = "add"
+        private const val STATUS_CONNECT_NETWORK = "connectNetwork"
+        private const val STATUS_ALREADY_ADDED = "alreadyAdded"
+        private const val STATUS_ADDED_BY_OTHER_ACCOUNT = "addedByOtherAccount"
+
+        private const val METHOD_AP = "ap"
+        private const val METHOD_SMART_AND_SOUND_WAVE = "smartAndSoundWave"
+        private const val METHOD_SMART = "smart"
+        private const val METHOD_SOUND_WAVE = "soundWave"
+
+        internal fun classifyProbeStatus(errorCode: Int?): String = when (errorCode) {
+            null, 120021 -> STATUS_ADD
+            120023, 120002, 120029 -> STATUS_CONNECT_NETWORK
+            120020 -> STATUS_ALREADY_ADDED
+            120022, 120024 -> STATUS_ADDED_BY_OTHER_ACCOUNT
+            else -> STATUS_RETRY
+        }
+
+        internal fun selectProvisioningMethod(
+            supportAP: Int,
+            supportWifi: Int,
+            supportSoundWave: Int,
+        ): String? {
+            if (supportAP == 2) return METHOD_AP
+            val supportsSmart = supportWifi == 3
+            val supportsSoundWave = supportSoundWave == 1
+            return when {
+                supportsSmart && supportsSoundWave -> METHOD_SMART_AND_SOUND_WAVE
+                supportsSmart -> METHOD_SMART
+                supportsSoundWave -> METHOD_SOUND_WAVE
+                else -> null
+            }
+        }
     }
 }
-
