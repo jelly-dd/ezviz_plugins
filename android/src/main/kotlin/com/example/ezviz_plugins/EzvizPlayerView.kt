@@ -36,6 +36,7 @@ class EzvizPlayerView(
 
     private val deviceSerial = creationParams?.get("deviceSerial") as? String
     private val cameraNo = (creationParams?.get("cameraNo") as? Number)?.toInt() ?: 1
+    private val isDeviceTalkBack = creationParams?.get("isDeviceTalkBack") as? Boolean ?: true
     private val verifyCode = creationParams?.get("verifyCode") as? String
     private val autoPlay = creationParams?.get("autoPlay") as? Boolean ?: true
 
@@ -69,6 +70,13 @@ class EzvizPlayerView(
                 "closeSound" -> {
                     result.success(player?.closeSound() ?: false)
                 }
+                "startVoiceTalk" -> {
+                    player?.closeSound()
+                    result.success(player?.startVoiceTalk(isDeviceTalkBack) ?: false)
+                }
+                "stopVoiceTalk" -> {
+                    result.success(player?.stopVoiceTalk() ?: false)
+                }
                 else -> result.notImplemented()
             }
         }
@@ -96,6 +104,7 @@ class EzvizPlayerView(
 
     override fun dispose() {
         channel.setMethodCallHandler(null)
+        player?.stopVoiceTalk()
         stopRealPlay()
         player?.let { EZOpenSDK.getInstance().releasePlayer(it) }
         player = null

@@ -179,6 +179,11 @@ class EzvizControl {
     });
   }
 
+  /// 请求对讲所需的麦克风权限。
+  Future<void> requestAudioPermission() async {
+    await _invoke('requestAudioPermission', const {});
+  }
+
   /// 退出登录（清空本地 token）。
   Future<void> logout() async {
     await _invoke('logout', const {});

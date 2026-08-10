@@ -11,6 +11,7 @@ class EzvizPlayer extends StatefulWidget {
     required this.deviceSerial,
     this.cameraNo = 1,
     this.verifyCode,
+    this.isDeviceTalkBack = true,
     this.autoPlay = true,
     this.onPlaySuccess,
     this.onPlayFail,
@@ -19,6 +20,7 @@ class EzvizPlayer extends StatefulWidget {
   final String deviceSerial;
   final int cameraNo;
   final String? verifyCode;
+  final bool isDeviceTalkBack;
   final bool autoPlay;
   final VoidCallback? onPlaySuccess;
   final void Function(String code)? onPlayFail;
@@ -44,6 +46,14 @@ class EzvizPlayerState extends State<EzvizPlayer> {
 
   Future<void> closeSound() async {
     await _channel?.invokeMethod('closeSound');
+  }
+
+  Future<bool> startVoiceTalk() async {
+    return await _channel?.invokeMethod<bool>('startVoiceTalk') ?? false;
+  }
+
+  Future<bool> stopVoiceTalk() async {
+    return await _channel?.invokeMethod<bool>('stopVoiceTalk') ?? false;
   }
 
   void _onPlatformViewCreated(int id) {
@@ -76,6 +86,7 @@ class EzvizPlayerState extends State<EzvizPlayer> {
       'deviceSerial': widget.deviceSerial,
       'cameraNo': widget.cameraNo,
       'verifyCode': widget.verifyCode,
+      'isDeviceTalkBack': widget.isDeviceTalkBack,
       'autoPlay': widget.autoPlay,
     };
     return AndroidView(

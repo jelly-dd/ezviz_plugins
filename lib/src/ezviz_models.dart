@@ -198,6 +198,7 @@ class EzvizCamera {
   final int cameraNo;
   final String cameraName;
   final String? cameraCover;
+  final bool isSubDevice;
   final bool shared;
   final int permission;
   final int? videoLevel;
@@ -209,6 +210,7 @@ class EzvizCamera {
     required this.cameraNo,
     required this.cameraName,
     this.cameraCover,
+    this.isSubDevice = false,
     this.shared = false,
     this.permission = 0,
     this.videoLevel,
@@ -223,6 +225,7 @@ class EzvizCamera {
       cameraNo: (map['cameraNo'] as num?)?.toInt() ?? 1,
       cameraName: map['cameraName'] as String? ?? '',
       cameraCover: map['cameraCover'] as String?,
+      isSubDevice: map['isSubDevice'] as bool? ?? false,
       shared: map['isShared'] as bool? ?? false,
       permission: (map['permission'] as num?)?.toInt() ?? 0,
       videoLevel: (map['videoLevel'] as num?)?.toInt(),
@@ -253,6 +256,9 @@ class EzvizDevice {
   /// 设备型号。
   final String? deviceType;
 
+  /// SDK 返回的设备分类原值，用于区分摄像机、网关等产品族。
+  final String? category;
+
   /// 通道数（摄像头数量）。
   final int cameraNum;
 
@@ -274,6 +280,7 @@ class EzvizDevice {
     this.online = false,
     this.encrypted = false,
     this.deviceType,
+    this.category,
     this.cameraNum = 1,
     this.cameras = const [],
     this.capabilities = const EzvizCapabilities(),
@@ -291,6 +298,7 @@ class EzvizDevice {
       online: map['isOnline'] as bool? ?? false,
       encrypted: map['isEncrypted'] as bool? ?? false,
       deviceType: map['deviceType'] as String?,
+      category: map['category'] as String?,
       cameraNum: (map['cameraNum'] as num?)?.toInt() ?? cameras.length,
       cameras: cameras,
       capabilities: EzvizCapabilities.fromMap(

@@ -195,6 +195,7 @@ final token = await ezviz.exchangeAccessTokenForTest(
 | `addDevice({deviceSerial, verifyCode})` | 绑定设备 |
 | `deleteDevice(deviceSerial)` | 解绑设备 |
 | `controlPtz({deviceSerial, direction, action})` | 云台控制 |
+| `requestAudioPermission()` | 请求对讲所需的麦克风权限 |
 | `startConfigWifi({ssid, password, deviceSerial, verifyCode, deviceType})` | 自动选择方式并完成配网、绑定 |
 | `stopConfigWifi()` | 停止/取消配网 |
 | `logout()` | 退出登录，清空本地 token |
@@ -225,6 +226,7 @@ final token = await ezviz.exchangeAccessTokenForTest(
 - `online` — 是否在线
 - `encrypted` — 实时视频是否需要设备验证码
 - `deviceType` — 设备型号
+- `category` — SDK 返回的产品分类原值，区分摄像机、网关等产品族
 - `cameraNum` — 通道数（摄像头数量）
 - `cameras` — SDK 返回的通道列表，播放和控制使用其中的 `cameraNo`
 - `capabilities` — 设备级标准能力集
@@ -235,6 +237,7 @@ final token = await ezviz.exchangeAccessTokenForTest(
 - `cameraNo`、`cameraName` — SDK 返回的真实通道号和名称
 - `videoLevel`、`videoQualities` — 当前及可用清晰度
 - `shared`、`permission` — 分享与通道权限信息
+- `isSubDevice` — 是否为网关/NVR 下的子设备；子设备对讲使用不同的 SDK 参数
 - `capabilities` — 通道实际能力，控制按钮应优先读取这里
 
 **`EzvizCapabilities`** — SDK 标准能力集：
@@ -247,7 +250,25 @@ final token = await ezviz.exchangeAccessTokenForTest(
 
 **`EzvizPlayer`** — 实时画面 Widget（`StatefulWidget`）：
 - 通过 `AndroidView` 嵌入原生 `EZPlayer` + `SurfaceView`
-- 通过 `GlobalKey<EzvizPlayerState>` 调用 `startRealPlay`/`stopRealPlay`/`openSound`/`closeSound`
+- 通过 `GlobalKey<EzvizPlayerState>` 调用 `startRealPlay`/`stopRealPlay`/`openSound`/`closeSound`/`startVoiceTalk`/`stopVoiceTalk`
 - `autoPlay: true` 时 Surface 就绪后自动开始播放
+
+对讲调用顺序为：先调用 `requestAudioPermission()`，再调用 `startVoiceTalk()`；
+对讲开始时插件会关闭播放声音，停止时调用 `stopVoiceTalk()`。
+
+## 智能家居扩展
+
+`EZOpenSDK` 的摄像机、NVR 和网关/子设备能力可以从 `EZDeviceInfo.category`、
+`deviceType`、通道对象和 `EzvizCapabilities` 判断。不同产品不要在 App 里根据名称硬编码，
+建议按以下层次扩展：
+
+1. 插件返回原始 `category`、`deviceType`、子设备标识和能力集。
+2. 插件按能力封装统一命令，例如 `startVoiceTalk`、`stopVoiceTalk`、`controlPtz`。
+3. App 只根据能力显示按钮，并使用统一命令。
+4. 传感器、门锁、灯、开关等非视频设备使用独立的产品适配器，不要强行复用 `EZPlayer`。
+
+当前 EZOpenSDK API 主要覆盖视频设备、通道、回放、云台、对讲和布防；
+具体智能家居品类的属性读取和控制需要萤石 IoT/云端对应 API。接入新产品时应新增适配器，
+而不是把所有型号塞进 `EzvizCapabilities`。
 
 **`EzvizException`** — 统一异常：`code`（原生错误码）、`message`

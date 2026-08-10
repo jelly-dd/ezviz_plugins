@@ -65,6 +65,7 @@ class EzvizPluginsPlugin :
     private var bindPollStarted = false
     private var activeProvisioningMethod: String? = null
     private var pendingWifiPermissionAction: (() -> Unit)? = null
+    private var pendingAudioPermissionResult: Result? = null
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         appContext = binding.applicationContext
@@ -84,6 +85,8 @@ class EzvizPluginsPlugin :
         stopNativeConfig()
         releaseNetworkBinding()
         pendingWifiPermissionAction = null
+        pendingAudioPermissionResult?.error("plugin_detached", "插件已卸载", null)
+        pendingAudioPermissionResult = null
         pendingConfigResult?.error("config_cancelled", "插件已卸载", null)
         pendingConfigResult = null
         io.shutdown()
@@ -119,6 +122,18 @@ class EzvizPluginsPlugin :
         permissions: Array<out String>,
         grantResults: IntArray,
     ): Boolean {
+        if (requestCode == AUDIO_PERMISSION_REQUEST_CODE) {
+            val pendingResult = pendingAudioPermissionResult
+            pendingAudioPermissionResult = null
+            val granted = grantResults.isNotEmpty() &&
+                grantResults[0] == PackageManager.PERMISSION_GRANTED
+            if (granted) {
+                pendingResult?.success(true)
+            } else {
+                pendingResult?.error("permission_denied", "对讲需要麦克风权限", null)
+            }
+            return true
+        }
         if (requestCode != WIFI_PERMISSION_REQUEST_CODE) return false
         val action = pendingWifiPermissionAction
         pendingWifiPermissionAction = null
@@ -142,6 +157,7 @@ class EzvizPluginsPlugin :
             "addDevice" -> addDevice(call, result)
             "deleteDevice" -> deleteDevice(call, result)
             "controlPtz" -> controlPtz(call, result)
+            "requestAudioPermission" -> requestAudioPermission(result)
             "getCurrentWifiSsid" -> getCurrentWifiSsid(result)
             "startConfigWifi" -> startConfigWifi(call, result)
             "stopConfigWifi" -> stopConfigWifi(result)
@@ -350,6 +366,29 @@ class EzvizPluginsPlugin :
             EZOpenSDK.getInstance().controlPTZ(serial, channelNo, cmd, act, speed)
             true
         }
+    }
+
+    private fun requestAudioPermission(result: Result) {
+        val currentActivity = activity
+        if (currentActivity == null) {
+            result.error("no_activity", "申请麦克风权限需要前台 Activity", null)
+            return
+        }
+        if (currentActivity.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            result.success(true)
+            return
+        }
+        if (pendingAudioPermissionResult != null) {
+            result.error("permission_pending", "麦克风权限申请正在进行", null)
+            return
+        }
+        pendingAudioPermissionResult = result
+        currentActivity.requestPermissions(
+            arrayOf(Manifest.permission.RECORD_AUDIO),
+            AUDIO_PERMISSION_REQUEST_CODE,
+        )
     }
 
     private fun getCurrentWifiSsid(result: Result) {
@@ -639,6 +678,7 @@ class EzvizPluginsPlugin :
             "isOnline" to (d.status == 1),
             "isEncrypted" to (d.isEncrypt == 1),
             "deviceType" to d.deviceType,
+            "category" to d.category,
             "cameraNum" to d.cameraNum,
             "cameras" to cameras,
             "capabilities" to capabilitiesToMap(d, null),
@@ -653,6 +693,7 @@ class EzvizPluginsPlugin :
             "cameraNo" to camera.cameraNo,
             "cameraName" to camera.cameraName,
             "cameraCover" to camera.cameraCover,
+            "isSubDevice" to (camera is EZSubDeviceInfo),
             "isShared" to (camera.isShared == 1),
             "permission" to camera.permission,
             "videoLevel" to camera.videoLevel?.videoLevel,
@@ -865,6 +906,7 @@ class EzvizPluginsPlugin :
     companion object {
         private const val CHANNEL_NAME = "com.example.matter/ezviz"
         private const val WIFI_PERMISSION_REQUEST_CODE = 0xE217
+        private const val AUDIO_PERMISSION_REQUEST_CODE = 0xE218
         internal const val PLAYER_VIEW_TYPE = "ezviz_player_view"
 
         private const val STATUS_RETRY = "retry"
