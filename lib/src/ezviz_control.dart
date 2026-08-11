@@ -162,7 +162,10 @@ class EzvizControl {
     await _invoke('deleteDevice', {'deviceSerial': deviceSerial});
   }
 
-  /// 云台控制。[direction]: 0上 1下 2左 3右；[action]: 0开始 1停止。
+  /// 云台控制。
+  ///
+  /// [direction]: 0上、1下、2左、3右、4放大、5缩小、6近焦、7远焦；
+  /// [action]: 0开始、1停止。
   Future<void> controlPtz({
     required String deviceSerial,
     int channelNo = 1,
@@ -176,6 +179,68 @@ class EzvizControl {
       'direction': direction,
       'action': action,
       'speed': speed,
+    });
+  }
+
+  Future<void> setVideoLevel({
+    required String deviceSerial,
+    required int channelNo,
+    required int videoLevel,
+  }) async {
+    await _invoke('setVideoLevel', {
+      'deviceSerial': deviceSerial,
+      'channelNo': channelNo,
+      'videoLevel': videoLevel,
+    });
+  }
+
+  Future<void> setDefence({
+    required String deviceSerial,
+    required int status,
+  }) async {
+    await _invoke('setDefence', {
+      'deviceSerial': deviceSerial,
+      'status': status,
+    });
+  }
+
+  Future<void> flipVideo({
+    required String deviceSerial,
+    required int channelNo,
+  }) async {
+    await _invoke('flipVideo', {
+      'deviceSerial': deviceSerial,
+      'channelNo': channelNo,
+    });
+  }
+
+  Future<EzvizUpgradeStatus> getUpgradeStatus(String deviceSerial) async {
+    final result = await _invoke('getUpgradeStatus', {
+      'deviceSerial': deviceSerial,
+    });
+    return EzvizUpgradeStatus.fromMap(_asMap(result));
+  }
+
+  Future<void> upgradeDevice(String deviceSerial) async {
+    await _invoke('upgradeDevice', {'deviceSerial': deviceSerial});
+  }
+
+  Future<List<EzvizStorageStatus>> getStorageStatus(String deviceSerial) async {
+    final result = await _invoke('getStorageStatus', {
+      'deviceSerial': deviceSerial,
+    });
+    return ((result as List?) ?? const [])
+        .map((item) => EzvizStorageStatus.fromMap(_asMap(item)))
+        .toList(growable: false);
+  }
+
+  Future<void> formatStorage({
+    required String deviceSerial,
+    required int index,
+  }) async {
+    await _invoke('formatStorage', {
+      'deviceSerial': deviceSerial,
+      'index': index,
     });
   }
 

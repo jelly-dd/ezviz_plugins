@@ -161,6 +161,64 @@ void main() {
     expect(result.method, EzvizProvisioningMethod.smart);
   });
 
+  test('设备控制方法透传通道参数并解析升级和存储状态', () async {
+    final calls = <MethodCall>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+          calls.add(call);
+          return switch (call.method) {
+            'getUpgradeStatus' => {'status': 0, 'progress': 42},
+            'getStorageStatus' => [
+              {'index': 2, 'name': 'SD 卡', 'status': 3, 'formatRate': 65},
+            ],
+            _ => true,
+          };
+        });
+
+    await ezviz.controlPtz(
+      deviceSerial: 'ABC123',
+      channelNo: 3,
+      direction: 4,
+      action: 0,
+      speed: 2,
+    );
+    await ezviz.setVideoLevel(
+      deviceSerial: 'ABC123',
+      channelNo: 3,
+      videoLevel: 2,
+    );
+    await ezviz.setDefence(deviceSerial: 'ABC123', status: 1);
+    await ezviz.flipVideo(deviceSerial: 'ABC123', channelNo: 3);
+    final upgrade = await ezviz.getUpgradeStatus('ABC123');
+    await ezviz.upgradeDevice('ABC123');
+    final storage = await ezviz.getStorageStatus('ABC123');
+    await ezviz.formatStorage(deviceSerial: 'ABC123', index: 2);
+
+    expect(calls.map((call) => call.method), [
+      'controlPtz',
+      'setVideoLevel',
+      'setDefence',
+      'flipVideo',
+      'getUpgradeStatus',
+      'upgradeDevice',
+      'getStorageStatus',
+      'formatStorage',
+    ]);
+    expect(calls.first.arguments, {
+      'deviceSerial': 'ABC123',
+      'channelNo': 3,
+      'direction': 4,
+      'action': 0,
+      'speed': 2,
+    });
+    expect(upgrade.status, 0);
+    expect(upgrade.progress, 42);
+    expect(storage.single.index, 2);
+    expect(storage.single.name, 'SD 卡');
+    expect(storage.single.status, 3);
+    expect(storage.single.formatRate, 65);
+  });
+
   test('原生抛错时归一化为 EzvizException', () async {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, (call) async {

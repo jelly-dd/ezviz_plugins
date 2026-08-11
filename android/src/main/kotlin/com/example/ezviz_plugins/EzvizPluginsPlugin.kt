@@ -157,6 +157,13 @@ class EzvizPluginsPlugin :
             "addDevice" -> addDevice(call, result)
             "deleteDevice" -> deleteDevice(call, result)
             "controlPtz" -> controlPtz(call, result)
+            "setVideoLevel" -> setVideoLevel(call, result)
+            "setDefence" -> setDefence(call, result)
+            "flipVideo" -> flipVideo(call, result)
+            "getUpgradeStatus" -> getUpgradeStatus(call, result)
+            "upgradeDevice" -> upgradeDevice(call, result)
+            "getStorageStatus" -> getStorageStatus(call, result)
+            "formatStorage" -> formatStorage(call, result)
             "requestAudioPermission" -> requestAudioPermission(result)
             "getCurrentWifiSsid" -> getCurrentWifiSsid(result)
             "startConfigWifi" -> startConfigWifi(call, result)
@@ -356,14 +363,140 @@ class EzvizPluginsPlugin :
                 0 -> EZConstants.EZPTZCommand.EZPTZCommandUp
                 1 -> EZConstants.EZPTZCommand.EZPTZCommandDown
                 2 -> EZConstants.EZPTZCommand.EZPTZCommandLeft
-                else -> EZConstants.EZPTZCommand.EZPTZCommandRight
+                3 -> EZConstants.EZPTZCommand.EZPTZCommandRight
+                4 -> EZConstants.EZPTZCommand.EZPTZCommandZoomIn
+                5 -> EZConstants.EZPTZCommand.EZPTZCommandZoomOut
+                6 -> EZConstants.EZPTZCommand.EZPTZCommandFocusNear
+                7 -> EZConstants.EZPTZCommand.EZPTZCommandFocusFar
+                else -> throw IllegalArgumentException("不支持的云台方向: $direction")
             }
-            val act = if (action == 0) {
-                EZConstants.EZPTZAction.EZPTZActionSTART
-            } else {
-                EZConstants.EZPTZAction.EZPTZActionSTOP
+            val act = when (action) {
+                0 -> EZConstants.EZPTZAction.EZPTZActionSTART
+                1 -> EZConstants.EZPTZAction.EZPTZActionSTOP
+                else -> throw IllegalArgumentException("不支持的云台动作: $action")
             }
-            EZOpenSDK.getInstance().controlPTZ(serial, channelNo, cmd, act, speed)
+            check(EZOpenSDK.getInstance().controlPTZ(serial, channelNo, cmd, act, speed)) {
+                "云台控制未成功"
+            }
+            true
+        }
+    }
+
+    private fun setVideoLevel(call: MethodCall, result: Result) {
+        val serial = call.argument<String>("deviceSerial")
+        val channelNo = (call.argument<Number>("channelNo"))?.toInt() ?: 1
+        val videoLevel = (call.argument<Number>("videoLevel"))?.toInt()
+        if (serial.isNullOrEmpty() || videoLevel == null) {
+            result.error("bad_args", "deviceSerial/videoLevel 不能为空", null)
+            return
+        }
+        async(result) {
+            check(EZOpenSDK.getInstance().setVideoLevel(serial, channelNo, videoLevel)) {
+                "清晰度设置未成功"
+            }
+            true
+        }
+    }
+
+    private fun setDefence(call: MethodCall, result: Result) {
+        val serial = call.argument<String>("deviceSerial")
+        val status = (call.argument<Number>("status"))?.toInt()
+        if (serial.isNullOrEmpty() || status == null) {
+            result.error("bad_args", "deviceSerial/status 不能为空", null)
+            return
+        }
+        val defenceStatus = when (status) {
+            0 -> EZConstants.EZDefenceStatus.EZDefence_IPC_CLOSE
+            1 -> EZConstants.EZDefenceStatus.EZDefence_IPC_OPEN
+            8 -> EZConstants.EZDefenceStatus.EZDefence_ALARMHOST_ATHOME
+            16 -> EZConstants.EZDefenceStatus.EZDefence_ALARMHOST_OUTER
+            else -> {
+                result.error("bad_args", "不支持的布防状态: $status", null)
+                return
+            }
+        }
+        async(result) {
+            check(EZOpenSDK.getInstance().setDefence(serial, defenceStatus)) {
+                "布防设置未成功"
+            }
+            true
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun flipVideo(call: MethodCall, result: Result) {
+        val serial = call.argument<String>("deviceSerial")
+        val channelNo = (call.argument<Number>("channelNo"))?.toInt() ?: 1
+        if (serial.isNullOrEmpty()) {
+            result.error("bad_args", "deviceSerial 不能为空", null)
+            return
+        }
+        async(result) {
+            EZOpenSDK.getInstance().controlVideoFlip(
+                serial,
+                channelNo,
+                EZConstants.EZPTZDisplayCommand.EZPTZDisplayCommandFlip,
+            )
+            true
+        }
+    }
+
+    private fun getUpgradeStatus(call: MethodCall, result: Result) {
+        val serial = call.argument<String>("deviceSerial")
+        if (serial.isNullOrEmpty()) {
+            result.error("bad_args", "deviceSerial 不能为空", null)
+            return
+        }
+        async(result) {
+            val status = EZOpenSDK.getInstance().getDeviceUpgradeStatus(serial)
+            mapOf(
+                "status" to status.upgradeStatus,
+                "progress" to status.upgradeProgress,
+            )
+        }
+    }
+
+    private fun upgradeDevice(call: MethodCall, result: Result) {
+        val serial = call.argument<String>("deviceSerial")
+        if (serial.isNullOrEmpty()) {
+            result.error("bad_args", "deviceSerial 不能为空", null)
+            return
+        }
+        async(result) {
+            EZOpenSDK.getInstance().upgradeDevice(serial)
+            true
+        }
+    }
+
+    private fun getStorageStatus(call: MethodCall, result: Result) {
+        val serial = call.argument<String>("deviceSerial")
+        if (serial.isNullOrEmpty()) {
+            result.error("bad_args", "deviceSerial 不能为空", null)
+            return
+        }
+        async(result) {
+            EZOpenSDK.getInstance().getStorageStatus(serial).orEmpty().map { storage ->
+                mapOf(
+                    "index" to storage.index,
+                    "name" to storage.name,
+                    "status" to storage.status,
+                    "formatRate" to storage.formatRate,
+                )
+            }
+        }
+    }
+
+    private fun formatStorage(call: MethodCall, result: Result) {
+        val serial = call.argument<String>("deviceSerial")
+        val index = (call.argument<Number>("index"))?.toInt()
+        if (serial.isNullOrEmpty() || index == null) {
+            result.error("bad_args", "deviceSerial/index 不能为空", null)
+            return
+        }
+        async(result) {
+            check(EZOpenSDK.getInstance().formatStorage(serial, index)) {
+                "存储格式化命令未成功"
+            }
             true
         }
     }

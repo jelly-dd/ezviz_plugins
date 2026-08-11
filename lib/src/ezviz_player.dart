@@ -15,6 +15,8 @@ class EzvizPlayer extends StatefulWidget {
     this.autoPlay = true,
     this.onPlaySuccess,
     this.onPlayFail,
+    this.onRecordComplete,
+    this.onRecordFail,
   });
 
   final String deviceSerial;
@@ -24,6 +26,8 @@ class EzvizPlayer extends StatefulWidget {
   final bool autoPlay;
   final VoidCallback? onPlaySuccess;
   final void Function(String code)? onPlayFail;
+  final void Function(String path)? onRecordComplete;
+  final void Function(String code)? onRecordFail;
 
   @override
   State<EzvizPlayer> createState() => EzvizPlayerState();
@@ -56,6 +60,25 @@ class EzvizPlayerState extends State<EzvizPlayer> {
     return await _channel?.invokeMethod<bool>('stopVoiceTalk') ?? false;
   }
 
+  Future<bool> setDigitalZoom(bool enabled) async {
+    return await _channel?.invokeMethod<bool>('setDigitalZoom', {
+          'enabled': enabled,
+        }) ??
+        false;
+  }
+
+  Future<String> capturePicture() async {
+    return await _channel?.invokeMethod<String>('capturePicture') ?? '';
+  }
+
+  Future<String> startLocalRecord() async {
+    return await _channel?.invokeMethod<String>('startLocalRecord') ?? '';
+  }
+
+  Future<bool> stopLocalRecord() async {
+    return await _channel?.invokeMethod<bool>('stopLocalRecord') ?? false;
+  }
+
   void _onPlatformViewCreated(int id) {
     final channel = MethodChannel('com.example.matter/ezviz_player_$id');
     channel.setMethodCallHandler(_handleCall);
@@ -70,6 +93,12 @@ class EzvizPlayerState extends State<EzvizPlayer> {
       case 'onPlayFail':
         final args = (call.arguments as Map?) ?? const {};
         widget.onPlayFail?.call(args['code']?.toString() ?? 'unknown');
+        break;
+      case 'onRecordComplete':
+        widget.onRecordComplete?.call(call.arguments?.toString() ?? '');
+        break;
+      case 'onRecordFail':
+        widget.onRecordFail?.call(call.arguments?.toString() ?? 'unknown');
         break;
     }
   }

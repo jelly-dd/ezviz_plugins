@@ -107,6 +107,43 @@ class EzvizConfigResult {
 
 enum EzvizTalkCapability { none, halfDuplex, fullDuplex }
 
+class EzvizUpgradeStatus {
+  final int status;
+  final int progress;
+
+  const EzvizUpgradeStatus({required this.status, required this.progress});
+
+  factory EzvizUpgradeStatus.fromMap(Map<String, dynamic> map) {
+    return EzvizUpgradeStatus(
+      status: (map['status'] as num?)?.toInt() ?? -1,
+      progress: (map['progress'] as num?)?.toInt() ?? 0,
+    );
+  }
+}
+
+class EzvizStorageStatus {
+  final int index;
+  final String name;
+  final int status;
+  final int formatRate;
+
+  const EzvizStorageStatus({
+    required this.index,
+    required this.name,
+    required this.status,
+    required this.formatRate,
+  });
+
+  factory EzvizStorageStatus.fromMap(Map<String, dynamic> map) {
+    return EzvizStorageStatus(
+      index: (map['index'] as num?)?.toInt() ?? 0,
+      name: map['name'] as String? ?? '存储介质',
+      status: (map['status'] as num?)?.toInt() ?? -1,
+      formatRate: (map['formatRate'] as num?)?.toInt() ?? 0,
+    );
+  }
+}
+
 /// 设备或通道由 EZOpenSDK 返回的标准能力集。
 class EzvizCapabilities {
   final EzvizTalkCapability talk;

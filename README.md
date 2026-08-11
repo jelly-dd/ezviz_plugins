@@ -1,6 +1,6 @@
 # ezviz_plugins
 
-萤石智能摄像能力插件（仅 Android）。封装萤石 EZOpenSDK 的 token 管理、设备列表、绑定/解绑、WiFi 配网、云台控制和实时画面播放等能力，不含任何界面，UI 由宿主自行实现。
+萤石智能摄像能力插件（仅 Android）。封装萤石 EZOpenSDK 的 token 管理、设备列表、绑定/解绑、WiFi 配网、实时画面、对讲、截图、录像、云台及设备设置等能力，不含任何界面，UI 由宿主自行实现。
 
 ---
 
@@ -158,7 +158,18 @@ await _playerKey.currentState?.openSound();
 await _playerKey.currentState?.closeSound();
 await _playerKey.currentState?.stopRealPlay();
 await _playerKey.currentState?.startRealPlay();
+await _playerKey.currentState?.setDigitalZoom(true);
+final picturePath = await _playerKey.currentState?.capturePicture();
+final recordPath = await _playerKey.currentState?.startLocalRecord();
+await _playerKey.currentState?.stopLocalRecord();
 ```
+
+截图和录像先写入宿主 App 的外部私有目录，无需相册存储权限：
+
+- 截图：`Android/data/<package>/files/Pictures/ezviz`
+- 录像：`Android/data/<package>/files/Movies/ezviz`
+
+如需出现在系统相册，宿主 App 再使用 Android `MediaStore` 导出。
 
 ### 错误处理
 
@@ -194,13 +205,21 @@ final token = await ezviz.exchangeAccessTokenForTest(
 | `probeDeviceInfo(deviceSerial, {verifyCode, deviceType})` | 返回五状态 `EzvizProbeResult` |
 | `addDevice({deviceSerial, verifyCode})` | 绑定设备 |
 | `deleteDevice(deviceSerial)` | 解绑设备 |
-| `controlPtz({deviceSerial, direction, action})` | 云台控制 |
+| `controlPtz({deviceSerial, channelNo, direction, action, speed})` | 云台方向、光学变倍和聚焦控制 |
+| `setVideoLevel({deviceSerial, channelNo, videoLevel})` | 设置通道清晰度；播放中切换后需重新取流 |
+| `setDefence({deviceSerial, status})` | 设置设备布防状态 |
+| `flipVideo({deviceSerial, channelNo})` | 翻转通道画面 |
+| `getUpgradeStatus(deviceSerial)` | 查询升级状态和进度 |
+| `upgradeDevice(deviceSerial)` | 启动设备升级 |
+| `getStorageStatus(deviceSerial)` | 查询设备存储分区状态 |
+| `formatStorage({deviceSerial, index})` | 格式化指定存储分区 |
 | `requestAudioPermission()` | 请求对讲所需的麦克风权限 |
 | `startConfigWifi({ssid, password, deviceSerial, verifyCode, deviceType})` | 自动选择方式并完成配网、绑定 |
 | `stopConfigWifi()` | 停止/取消配网 |
 | `logout()` | 退出登录，清空本地 token |
 
-**云台 direction**：0 上 / 1 下 / 2 左 / 3 右  
+**云台 direction**：0 上 / 1 下 / 2 左 / 3 右 / 4 光学放大 / 5 光学缩小 / 6 近焦 / 7 远焦
+
 **云台 action**：0 开始 / 1 停止
 
 ---
@@ -250,8 +269,12 @@ final token = await ezviz.exchangeAccessTokenForTest(
 
 **`EzvizPlayer`** — 实时画面 Widget（`StatefulWidget`）：
 - 通过 `AndroidView` 嵌入原生 `EZPlayer` + `SurfaceView`
-- 通过 `GlobalKey<EzvizPlayerState>` 调用 `startRealPlay`/`stopRealPlay`/`openSound`/`closeSound`/`startVoiceTalk`/`stopVoiceTalk`
+- 通过 `GlobalKey<EzvizPlayerState>` 控制播放、声音、对讲、电子放大、截图和本地录像
 - `autoPlay: true` 时 Surface 就绪后自动开始播放
+- `onRecordComplete` / `onRecordFail` 返回 MP4 转换结果
+
+截图、本地录像和电子放大是 `EZPlayer` 播放器能力，不依赖设备能力位；光学变倍、
+近远焦、对讲、翻转、布防和升级等设备命令必须先检查 `EzvizCapabilities`。
 
 对讲调用顺序为：先调用 `requestAudioPermission()`，再调用 `startVoiceTalk()`；
 对讲开始时插件会关闭播放声音，停止时调用 `stopVoiceTalk()`。
