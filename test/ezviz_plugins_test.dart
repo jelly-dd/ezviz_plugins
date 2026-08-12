@@ -326,6 +326,42 @@ void main() {
     });
   });
 
+  test('加密告警图片通过插件解密加载', () async {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+          expect(call.method, 'loadAlarmImage');
+          expect(call.arguments, {
+            'alarmPicUrl': 'https://example.com/alarm.jpg',
+            'encrypted': true,
+            'crypt': 1,
+            'checksum': null,
+            'verifyCode': 'ABCDEF',
+          });
+          return Uint8List.fromList([1, 2, 3]);
+        });
+    final alarm = EzvizAlarm.fromMap({
+      'alarmPicUrl': 'https://example.com/alarm.jpg',
+      'isEncrypted': true,
+      'crypt': 1,
+    });
+
+    final bytes = await ezviz.loadAlarmImage(alarm, verifyCode: 'ABCDEF');
+
+    expect(bytes, Uint8List.fromList([1, 2, 3]));
+  });
+
+  test('设备序列号形式的 customerInfo 不作为告警详情展示', () {
+    final alarm = EzvizAlarm.fromMap({
+      'alarmId': 'alarm-1',
+      'alarmName': '人体检测',
+      'deviceSerial': 'ABC123456',
+      'customerInfo': 'ABC123456',
+    });
+
+    expect(alarm.readableDetailMessage, isNull);
+    expect(alarm.detailMessage, '人体检测');
+  });
+
   test('原生抛错时归一化为 EzvizException', () async {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, (call) async {

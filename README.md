@@ -223,6 +223,12 @@ final unread = await ezviz.getUnreadAlarmCount(
 
 await ezviz.markAlarmsRead([alarms.first.alarmId]);
 await ezviz.deleteAlarms([alarms.first.alarmId]);
+
+// 加密告警图由插件下载并调用 EZOpenSDK.decryptData 解密。
+final imageBytes = await ezviz.loadAlarmImage(
+  alarms.first,
+  verifyCode: 'ABCDEF', // 仅设备加密图片需要；平台加密自动使用 checksum
+);
 ```
 
 `getAlarmList` 查询萤石云中已经产生的告警记录，不是后台实时推送。App 被杀死后仍需
@@ -351,9 +357,10 @@ final token = await ezviz.exchangeAccessTokenForTest(
 - `alarmId`、`alarmName`、`alarmType` — 告警身份、名称和类型
 - `deviceSerial`、`cameraNo` — 告警所属设备和真实通道
 - `alarmPicUrl`、`encrypted`、`crypt` — 告警图片及加密信息
+- `loadAlarmImage(alarm, verifyCode)` — 下载并解密告警图片，返回图片字节
 - `alarmStartTime`、`preTime`、`delayTime` — 告警与事件录像时间范围
 - `read`、`recordState`、`hasRecord` — 阅读状态和录像存储状态
-- `customerType`、`customerInfo` — SDK 返回的厂商扩展事件类型和详细内容；`customerInfoJson` 可读取 JSON，`detailMessage` 返回适合直接展示的文本
+- `customerType`、`customerInfo` — SDK 返回的厂商扩展字段；`customerInfoJson` 可读取 JSON。部分设备把 `customerInfo` 用作设备标识，`readableDetailMessage` 会过滤这类内部值。
 
 **`EzvizPlayback`** — 独立 SD 卡回放 Widget：
 - 支持开始、停止、暂停、继续、时间跳转、声音和倍速控制

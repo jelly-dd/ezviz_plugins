@@ -35,6 +35,8 @@ import java.util.concurrent.Executors
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.Calendar
 
 /**
@@ -171,6 +173,7 @@ class EzvizPluginsPlugin :
             "setAccessToken" -> setAccessToken(call, result)
             "getDeviceList" -> getDeviceList(call, result)
             "getAlarmList" -> getAlarmList(call, result)
+            "loadAlarmImage" -> loadAlarmImage(call, result)
             "getUnreadAlarmCount" -> getUnreadAlarmCount(call, result)
             "markAlarmsRead" -> markAlarmsRead(call, result)
             "deleteAlarms" -> deleteAlarms(call, result)
@@ -283,6 +286,44 @@ class EzvizPluginsPlugin :
                 deviceSerial,
                 EZConstants.EZMessageType.EZMessageTypeAlarm,
             )
+        }
+    }
+
+    /**
+     * 下载告警图片；加密图片在原生层按萤石规则解密后再返回给 Flutter。
+     * 设备加密使用 verifyCode，平台加密使用 EZAlarmInfo.checksum。
+     */
+    private fun loadAlarmImage(call: MethodCall, result: Result) {
+        val alarmPicUrl = call.argument<String>("alarmPicUrl")
+        if (alarmPicUrl.isNullOrBlank()) {
+            result.error("bad_args", "alarmPicUrl 不能为空", null)
+            return
+        }
+        val encrypted = call.argument<Boolean>("encrypted") ?: false
+        val crypt = (call.argument<Number>("crypt"))?.toInt() ?: 0
+        val checksum = call.argument<String>("checksum")
+        val verifyCode = call.argument<String>("verifyCode")
+        async(result) {
+            val connection = (URL(alarmPicUrl).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 15_000
+                readTimeout = 15_000
+                instanceFollowRedirects = true
+            }
+            try {
+                val encryptedBytes = connection.inputStream.use { it.readBytes() }
+                if (!encrypted) return@async encryptedBytes
+
+                val cryptType = if (crypt == 2) 2 else 1
+                val key = if (cryptType == 2) checksum else verifyCode
+                require(!key.isNullOrBlank()) {
+                    if (cryptType == 2) "告警图片缺少平台解密密钥" else "告警图片需要设备验证码"
+                }
+                EZOpenSDK.getInstance().decryptData(encryptedBytes, key, cryptType)
+                    ?.takeIf { it.isNotEmpty() }
+                    ?: throw IllegalStateException("告警图片解密失败，请检查设备验证码")
+            } finally {
+                connection.disconnect()
+            }
         }
     }
 

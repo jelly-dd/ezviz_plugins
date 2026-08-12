@@ -141,6 +141,26 @@ class EzvizControl {
         .toList(growable: false);
   }
 
+  /// 下载告警图片。加密图片由 Android 原生萤石 SDK 解密后返回。
+  ///
+  /// [verifyCode] 仅用于 `crypt != 2` 的设备加密图片；平台加密会自动使用
+  /// 告警对象中的 `checksum`。
+  Future<Uint8List> loadAlarmImage(
+    EzvizAlarm alarm, {
+    String? verifyCode,
+  }) async {
+    final result = await _invoke('loadAlarmImage', {
+      'alarmPicUrl': alarm.alarmPicUrl,
+      'encrypted': alarm.encrypted,
+      'crypt': alarm.crypt,
+      'checksum': alarm.checksum,
+      'verifyCode': verifyCode,
+    });
+    if (result is Uint8List) return result;
+    if (result is List<int>) return Uint8List.fromList(result);
+    throw const EzvizException('bad_response', '告警图片数据格式不正确');
+  }
+
   /// 获取设备告警未读数；不传序列号时查询账号下全部设备。
   Future<int> getUnreadAlarmCount({String? deviceSerial}) async {
     final result = await _invoke('getUnreadAlarmCount', {

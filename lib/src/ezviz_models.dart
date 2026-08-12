@@ -230,8 +230,10 @@ class EzvizAlarm {
     }
   }
 
-  /// 返回扩展字段中最适合直接展示给用户的事件详情。
-  String get detailMessage {
+  /// 返回扩展字段中可直接展示给用户的事件详情。
+  ///
+  /// 部分设备会将 [customerInfo] 用作设备序列号等内部关联值，不能误显示为告警内容。
+  String? get readableDetailMessage {
     final json = customerInfoJson;
     if (json != null) {
       for (final key in [
@@ -242,11 +244,23 @@ class EzvizAlarm {
         'alarmName',
       ]) {
         final value = json[key]?.toString().trim();
-        if (value != null && value.isNotEmpty) return value;
+        if (value != null && !_isInternalCustomerValue(value)) return value;
       }
     }
     final raw = customerInfo?.trim();
-    return raw == null || raw.isEmpty ? alarmName : raw;
+    if (raw == null || _isInternalCustomerValue(raw)) return null;
+    return raw;
+  }
+
+  /// 兼容旧调用：没有可读详情时回退到告警名称。
+  String get detailMessage => readableDetailMessage ?? alarmName;
+
+  bool _isInternalCustomerValue(String value) {
+    final normalized = value.trim().toUpperCase();
+    return normalized.isEmpty ||
+        normalized == deviceSerial.trim().toUpperCase() ||
+        normalized == alarmId.trim().toUpperCase() ||
+        normalized == alarmName.trim().toUpperCase();
   }
 
   factory EzvizAlarm.fromMap(Map<String, dynamic> map) {
