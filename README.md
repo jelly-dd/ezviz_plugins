@@ -171,6 +171,64 @@ await _playerKey.currentState?.stopLocalRecord();
 
 如需出现在系统相册，宿主 App 再使用 Android `MediaStore` 导出。
 
+### SD 卡录像回放
+
+```dart
+final records = await ezviz.searchDeviceRecords(
+  deviceSerial: 'ABC123456',
+  channelNo: 1,
+  startTime: DateTime(2026, 8, 11),
+  endTime: DateTime(2026, 8, 12),
+);
+
+final record = records.first;
+final playbackKey = GlobalKey<EzvizPlaybackState>();
+
+EzvizPlayback(
+  key: playbackKey,
+  deviceSerial: 'ABC123456',
+  cameraNo: 1,
+  startTime: record.startTime,
+  endTime: record.endTime,
+  verifyCode: 'ABCDEF',
+  onProgress: (position) => print(position),
+  onPlayFail: (code) => print('回放失败：$code'),
+)
+
+await playbackKey.currentState?.pausePlayback();
+await playbackKey.currentState?.resumePlayback();
+await playbackKey.currentState?.seekPlayback(record.startTime);
+await playbackKey.currentState?.setPlaybackRate(4);
+
+final downloadedPath = await ezviz.downloadDeviceRecord(
+  record: record,
+  verifyCode: 'ABCDEF',
+);
+```
+
+录像下载到 `Android/data/<package>/files/Movies/ezviz/downloads`。
+
+### 告警消息
+
+```dart
+final alarms = await ezviz.getAlarmList(
+  deviceSerial: 'ABC123456',
+  page: 0,
+  size: 20,
+);
+
+final unread = await ezviz.getUnreadAlarmCount(
+  deviceSerial: 'ABC123456',
+);
+
+await ezviz.markAlarmsRead([alarms.first.alarmId]);
+await ezviz.deleteAlarms([alarms.first.alarmId]);
+```
+
+`getAlarmList` 查询萤石云中已经产生的告警记录，不是后台实时推送。App 被杀死后仍需
+收到系统通知时，要另外接入萤石推送服务或服务端消息订阅，并配置 `pushSecret`、厂商
+推送通道及 Android 通知权限。
+
 ### 错误处理
 
 ```dart
@@ -202,6 +260,10 @@ final token = await ezviz.exchangeAccessTokenForTest(
 | `setAccessToken(token)` | 把 accessToken 写入 SDK |
 | `exchangeAccessTokenForTest({appKey, appSecret})` | ⚠️ 仅测试，端上换 token |
 | `getDeviceList({page, size})` | 返回 `List<EzvizDevice>` |
+| `getAlarmList({deviceSerial, page, size, beginTime, endTime})` | 查询设备或账号告警列表 |
+| `getUnreadAlarmCount({deviceSerial})` | 查询告警未读数 |
+| `markAlarmsRead(alarmIds)` | 批量标记告警为已读 |
+| `deleteAlarms(alarmIds)` | 批量删除告警 |
 | `probeDeviceInfo(deviceSerial, {verifyCode, deviceType})` | 返回五状态 `EzvizProbeResult` |
 | `addDevice({deviceSerial, verifyCode})` | 绑定设备 |
 | `deleteDevice(deviceSerial)` | 解绑设备 |
@@ -213,6 +275,8 @@ final token = await ezviz.exchangeAccessTokenForTest(
 | `upgradeDevice(deviceSerial)` | 启动设备升级 |
 | `getStorageStatus(deviceSerial)` | 查询设备存储分区状态 |
 | `formatStorage({deviceSerial, index})` | 格式化指定存储分区 |
+| `searchDeviceRecords({deviceSerial, channelNo, startTime, endTime})` | 查询时间范围内的 SD 卡录像 |
+| `downloadDeviceRecord({record, verifyCode})` | 下载查询得到的 SD 卡录像 |
 | `requestAudioPermission()` | 请求对讲所需的麦克风权限 |
 | `startConfigWifi({ssid, password, deviceSerial, verifyCode, deviceType})` | 自动选择方式并完成配网、绑定 |
 | `stopConfigWifi()` | 停止/取消配网 |
@@ -279,6 +343,22 @@ final token = await ezviz.exchangeAccessTokenForTest(
 对讲调用顺序为：先调用 `requestAudioPermission()`，再调用 `startVoiceTalk()`；
 对讲开始时插件会关闭播放声音，停止时调用 `stopVoiceTalk()`。
 
+**`EzvizDeviceRecord`** — SD 卡录像片段：
+- `recordId` — 查询后由插件生成，用于下载时复用原生录像对象
+- `startTime`、`endTime`、`duration` — 录像时间范围
+
+**`EzvizAlarm`** — 摄像头告警记录：
+- `alarmId`、`alarmName`、`alarmType` — 告警身份、名称和类型
+- `deviceSerial`、`cameraNo` — 告警所属设备和真实通道
+- `alarmPicUrl`、`encrypted`、`crypt` — 告警图片及加密信息
+- `alarmStartTime`、`preTime`、`delayTime` — 告警与事件录像时间范围
+- `read`、`recordState`、`hasRecord` — 阅读状态和录像存储状态
+
+**`EzvizPlayback`** — 独立 SD 卡回放 Widget：
+- 支持开始、停止、暂停、继续、时间跳转、声音和倍速控制
+- 通过 `onPrepared` 返回真实取流类型，通过 `onProgress` 返回设备 OSD 时间
+- 实时预览和录像回放使用不同 PlatformView，不共用播放器状态
+
 ## 智能家居扩展
 
 `EZOpenSDK` 的摄像机、NVR 和网关/子设备能力可以从 `EZDeviceInfo.category`、
@@ -295,3 +375,18 @@ final token = await ezviz.exchangeAccessTokenForTest(
 而不是把所有型号塞进 `EzvizCapabilities`。
 
 **`EzvizException`** — 统一异常：`code`（原生错误码）、`message`
+
+## 能力测试边界
+
+设备列表中的能力位只表示设备具备相应条件，不代表该能力可以在实时预览播放器上直接调用：
+
+| 能力 | 正确含义 | 测试前置条件和调用链 |
+|---|---|---|
+| `defencePlan` | 设备支持布防计划 | 当前 EZOpenSDK 仅提供能力判断，没有公开的计划查询/设置方法；计划配置需要对应 Open API 或萤石云视频 App |
+| `playbackRate` | 录像支持倍速回放 | 先查询云端或 SD 卡录像，创建回放 `EZPlayer` 并调用 `startPlayback`，回放准备完成后调用 `setPlaybackRate` |
+| `directInnerRelaySpeed` | 内网直连时支持 SD 卡倍速回放 | 手机与设备处于同一局域网，SD 卡回放播放器的 `getStreamFetchType()` 必须为 `2`，此时可测试 1/4/8 倍速 |
+| `sdRecordDownload` | 支持下载设备 SD 卡录像 | 先用 `searchRecordFileFromDevice` 获取 `EZDeviceRecordFile`，再创建 `EZDeviceStreamDownload` 下载选中的录像 |
+| `sdCover` | 支持获取 SD 卡录像封面图 | 先查询 SD 卡录像列表，再为每个 `EZDeviceRecordFile` 请求封面；它不是“循环覆盖录像”开关 |
+
+当前示例已实现 SD 卡录像列表、回放播放器、倍速和录像下载；`sdCover` 的封面请求
+以及云存储录像列表仍未实现。

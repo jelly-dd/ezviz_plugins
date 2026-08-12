@@ -144,6 +144,93 @@ class EzvizStorageStatus {
   }
 }
 
+class EzvizDeviceRecord {
+  final String recordId;
+  final DateTime startTime;
+  final DateTime endTime;
+
+  const EzvizDeviceRecord({
+    required this.recordId,
+    required this.startTime,
+    required this.endTime,
+  });
+
+  Duration get duration => endTime.difference(startTime);
+
+  factory EzvizDeviceRecord.fromMap(Map<String, dynamic> map) {
+    return EzvizDeviceRecord(
+      recordId: map['recordId'] as String? ?? '',
+      startTime: DateTime.fromMillisecondsSinceEpoch(
+        (map['startTime'] as num?)?.toInt() ?? 0,
+      ),
+      endTime: DateTime.fromMillisecondsSinceEpoch(
+        (map['endTime'] as num?)?.toInt() ?? 0,
+      ),
+    );
+  }
+}
+
+class EzvizAlarm {
+  final String alarmId;
+  final String alarmName;
+  final String deviceSerial;
+  final String deviceName;
+  final int cameraNo;
+  final int alarmType;
+  final String? alarmPicUrl;
+  final String alarmStartTime;
+  final bool read;
+  final bool encrypted;
+  final int crypt;
+  final String? checksum;
+  final int preTime;
+  final int delayTime;
+  final int recordState;
+  final String? category;
+
+  const EzvizAlarm({
+    required this.alarmId,
+    required this.alarmName,
+    required this.deviceSerial,
+    required this.deviceName,
+    required this.cameraNo,
+    required this.alarmType,
+    this.alarmPicUrl,
+    required this.alarmStartTime,
+    this.read = false,
+    this.encrypted = false,
+    this.crypt = 0,
+    this.checksum,
+    this.preTime = 0,
+    this.delayTime = 0,
+    this.recordState = 0,
+    this.category,
+  });
+
+  bool get hasRecord => recordState != 0;
+
+  factory EzvizAlarm.fromMap(Map<String, dynamic> map) {
+    return EzvizAlarm(
+      alarmId: map['alarmId'] as String? ?? '',
+      alarmName: map['alarmName'] as String? ?? '设备告警',
+      deviceSerial: map['deviceSerial'] as String? ?? '',
+      deviceName: map['deviceName'] as String? ?? '',
+      cameraNo: (map['cameraNo'] as num?)?.toInt() ?? 1,
+      alarmType: (map['alarmType'] as num?)?.toInt() ?? -1,
+      alarmPicUrl: map['alarmPicUrl'] as String?,
+      alarmStartTime: map['alarmStartTime'] as String? ?? '',
+      read: map['isRead'] as bool? ?? false,
+      encrypted: map['isEncrypted'] as bool? ?? false,
+      crypt: (map['crypt'] as num?)?.toInt() ?? 0,
+      checksum: map['checksum'] as String?,
+      preTime: (map['preTime'] as num?)?.toInt() ?? 0,
+      delayTime: (map['delayTime'] as num?)?.toInt() ?? 0,
+      recordState: (map['recordState'] as num?)?.toInt() ?? 0,
+      category: map['category'] as String?,
+    );
+  }
+}
+
 /// 设备或通道由 EZOpenSDK 返回的标准能力集。
 class EzvizCapabilities {
   final EzvizTalkCapability talk;

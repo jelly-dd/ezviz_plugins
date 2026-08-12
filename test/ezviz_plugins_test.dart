@@ -219,6 +219,108 @@ void main() {
     expect(storage.single.formatRate, 65);
   });
 
+  test('查询并下载 SD 卡录像使用稳定的 recordId', () async {
+    final start = DateTime(2026, 8, 11);
+    final end = DateTime(2026, 8, 12);
+    final calls = <MethodCall>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+          calls.add(call);
+          if (call.method == 'searchDeviceRecords') {
+            return [
+              {
+                'recordId': 'ABC123:3:1000:61000',
+                'startTime': 1000,
+                'endTime': 61000,
+              },
+            ];
+          }
+          if (call.method == 'downloadDeviceRecord') {
+            return '/movies/device.mp4';
+          }
+          return null;
+        });
+
+    final records = await ezviz.searchDeviceRecords(
+      deviceSerial: 'ABC123',
+      channelNo: 3,
+      startTime: start,
+      endTime: end,
+    );
+    final path = await ezviz.downloadDeviceRecord(
+      record: records.single,
+      verifyCode: 'ABCDEF',
+    );
+
+    expect(calls.first.method, 'searchDeviceRecords');
+    expect(calls.first.arguments, {
+      'deviceSerial': 'ABC123',
+      'channelNo': 3,
+      'startTime': start.millisecondsSinceEpoch,
+      'endTime': end.millisecondsSinceEpoch,
+    });
+    expect(records.single.duration, const Duration(minutes: 1));
+    expect(calls.last.arguments, {
+      'recordId': 'ABC123:3:1000:61000',
+      'verifyCode': 'ABCDEF',
+    });
+    expect(path, '/movies/device.mp4');
+  });
+
+  test('告警列表和消息操作通过插件黑盒接口完成', () async {
+    final calls = <MethodCall>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+          calls.add(call);
+          return switch (call.method) {
+            'getAlarmList' => [
+              {
+                'alarmId': 'alarm-1',
+                'alarmName': '人体检测',
+                'deviceSerial': 'ABC123',
+                'deviceName': '客厅',
+                'cameraNo': 2,
+                'alarmType': 10000,
+                'alarmPicUrl': 'https://example.com/alarm.jpg',
+                'alarmStartTime': '2026-08-12 10:30:00',
+                'isRead': false,
+                'isEncrypted': true,
+                'crypt': 1,
+                'preTime': 5,
+                'delayTime': 15,
+                'recordState': 4,
+              },
+            ],
+            'getUnreadAlarmCount' => 3,
+            _ => true,
+          };
+        });
+
+    final alarms = await ezviz.getAlarmList(
+      deviceSerial: 'ABC123',
+      page: 0,
+      size: 20,
+    );
+    final unread = await ezviz.getUnreadAlarmCount(deviceSerial: 'ABC123');
+    await ezviz.markAlarmsRead([alarms.single.alarmId]);
+    await ezviz.deleteAlarms([alarms.single.alarmId]);
+
+    expect(alarms.single.alarmName, '人体检测');
+    expect(alarms.single.cameraNo, 2);
+    expect(alarms.single.encrypted, true);
+    expect(alarms.single.hasRecord, true);
+    expect(unread, 3);
+    expect(calls.map((call) => call.method), [
+      'getAlarmList',
+      'getUnreadAlarmCount',
+      'markAlarmsRead',
+      'deleteAlarms',
+    ]);
+    expect(calls[2].arguments, {
+      'alarmIds': ['alarm-1'],
+    });
+  });
+
   test('原生抛错时归一化为 EzvizException', () async {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, (call) async {

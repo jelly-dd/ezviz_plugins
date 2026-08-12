@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.os.Build
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import com.ezviz.sdk.configwifi.EZConfigWifiErrorEnum
@@ -15,9 +16,12 @@ import com.videogo.openapi.EZConstants
 import com.videogo.openapi.EZOpenSDK
 import com.videogo.openapi.EZOpenSDKListener
 import com.videogo.openapi.bean.EZCameraInfo
+import com.videogo.openapi.bean.EZAlarmInfo
 import com.videogo.openapi.bean.EZDeviceInfo
+import com.videogo.openapi.bean.EZDeviceRecordFile
 import com.videogo.openapi.bean.EZSubDeviceInfo
 import com.videogo.exception.BaseException
+import com.videogo.stream.EZDeviceStreamDownload
 import com.videogo.wificonfig.APWifiConfig
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
@@ -28,6 +32,10 @@ import io.flutter.plugin.common.MethodChannel.MethodCallHandler
 import io.flutter.plugin.common.MethodChannel.Result
 import io.flutter.plugin.common.PluginRegistry
 import java.util.concurrent.Executors
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
+import java.io.File
+import java.util.Calendar
 
 /**
  * 萤石能力插件的 Android 原生入口。
@@ -55,6 +63,8 @@ class EzvizPluginsPlugin :
 
     private val io = Executors.newSingleThreadExecutor()
     private val main = Handler(Looper.getMainLooper())
+    private val deviceRecordCache = ConcurrentHashMap<String, EZDeviceRecordFile>()
+    private val activeDownloads = ConcurrentHashMap<String, EZDeviceStreamDownload>()
 
     private var pendingConfigResult: Result? = null
 
@@ -76,6 +86,10 @@ class EzvizPluginsPlugin :
             PLAYER_VIEW_TYPE,
             EzvizPlayerViewFactory(binding.binaryMessenger),
         )
+        binding.platformViewRegistry.registerViewFactory(
+            PLAYBACK_VIEW_TYPE,
+            EzvizPlaybackViewFactory(binding.binaryMessenger),
+        )
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
@@ -90,6 +104,9 @@ class EzvizPluginsPlugin :
         pendingConfigResult?.error("config_cancelled", "插件已卸载", null)
         pendingConfigResult = null
         io.shutdown()
+        activeDownloads.values.forEach { it.stop() }
+        activeDownloads.clear()
+        deviceRecordCache.clear()
         appContext = null
     }
 
@@ -153,6 +170,10 @@ class EzvizPluginsPlugin :
             "checkInit" -> result.success(buildStatus())
             "setAccessToken" -> setAccessToken(call, result)
             "getDeviceList" -> getDeviceList(call, result)
+            "getAlarmList" -> getAlarmList(call, result)
+            "getUnreadAlarmCount" -> getUnreadAlarmCount(call, result)
+            "markAlarmsRead" -> markAlarmsRead(call, result)
+            "deleteAlarms" -> deleteAlarms(call, result)
             "probeDeviceInfo" -> probeDeviceInfo(call, result)
             "addDevice" -> addDevice(call, result)
             "deleteDevice" -> deleteDevice(call, result)
@@ -164,6 +185,8 @@ class EzvizPluginsPlugin :
             "upgradeDevice" -> upgradeDevice(call, result)
             "getStorageStatus" -> getStorageStatus(call, result)
             "formatStorage" -> formatStorage(call, result)
+            "searchDeviceRecords" -> searchDeviceRecords(call, result)
+            "downloadDeviceRecord" -> downloadDeviceRecord(call, result)
             "requestAudioPermission" -> requestAudioPermission(result)
             "getCurrentWifiSsid" -> getCurrentWifiSsid(result)
             "startConfigWifi" -> startConfigWifi(call, result)
@@ -232,6 +255,63 @@ class EzvizPluginsPlugin :
             val list: List<EZDeviceInfo> =
                 EZOpenSDK.getInstance().getDeviceList(page, size) ?: emptyList()
             list.map { deviceToMap(it) }
+        }
+    }
+
+    private fun getAlarmList(call: MethodCall, result: Result) {
+        val deviceSerial = call.argument<String>("deviceSerial")?.takeIf { it.isNotEmpty() }
+        val page = (call.argument<Number>("page"))?.toInt() ?: 0
+        val size = (call.argument<Number>("size"))?.toInt() ?: 20
+        val beginTime = (call.argument<Number>("beginTime"))?.toLong()?.let(::calendarAt)
+        val endTime = (call.argument<Number>("endTime"))?.toLong()?.let(::calendarAt)
+        async(result) {
+            val alarms: List<EZAlarmInfo> = EZOpenSDK.getInstance().getAlarmList(
+                deviceSerial,
+                page,
+                size.coerceIn(1, 20),
+                beginTime,
+                endTime,
+            ) ?: emptyList()
+            alarms.map(::alarmToMap)
+        }
+    }
+
+    private fun getUnreadAlarmCount(call: MethodCall, result: Result) {
+        val deviceSerial = call.argument<String>("deviceSerial")?.takeIf { it.isNotEmpty() }
+        async(result) {
+            EZOpenSDK.getInstance().getUnreadMessageCount(
+                deviceSerial,
+                EZConstants.EZMessageType.EZMessageTypeAlarm,
+            )
+        }
+    }
+
+    private fun markAlarmsRead(call: MethodCall, result: Result) {
+        val alarmIds = call.argument<List<String>>("alarmIds").orEmpty()
+        if (alarmIds.isEmpty()) {
+            result.error("bad_args", "alarmIds 不能为空", null)
+            return
+        }
+        async(result) {
+            check(
+                EZOpenSDK.getInstance().setAlarmStatus(
+                    alarmIds,
+                    EZConstants.EZAlarmStatus.EZAlarmStatusRead,
+                ),
+            ) { "告警标记已读未成功" }
+            true
+        }
+    }
+
+    private fun deleteAlarms(call: MethodCall, result: Result) {
+        val alarmIds = call.argument<List<String>>("alarmIds").orEmpty()
+        if (alarmIds.isEmpty()) {
+            result.error("bad_args", "alarmIds 不能为空", null)
+            return
+        }
+        async(result) {
+            check(EZOpenSDK.getInstance().deleteAlarm(alarmIds)) { "删除告警未成功" }
+            true
         }
     }
 
@@ -500,6 +580,110 @@ class EzvizPluginsPlugin :
             true
         }
     }
+
+    private fun searchDeviceRecords(call: MethodCall, result: Result) {
+        val serial = call.argument<String>("deviceSerial")
+        val channelNo = (call.argument<Number>("channelNo"))?.toInt() ?: 1
+        val startTime = (call.argument<Number>("startTime"))?.toLong()
+        val endTime = (call.argument<Number>("endTime"))?.toLong()
+        if (serial.isNullOrEmpty() || startTime == null || endTime == null || startTime >= endTime) {
+            result.error("bad_args", "deviceSerial/startTime/endTime 参数无效", null)
+            return
+        }
+        async(result) {
+            val records = EZOpenSDK.getInstance().searchRecordFileFromDevice(
+                serial,
+                channelNo,
+                calendarAt(startTime),
+                calendarAt(endTime),
+            ).orEmpty()
+            records.mapNotNull { record ->
+                val start = record.startTime?.timeInMillis ?: return@mapNotNull null
+                val end = record.stopTime?.timeInMillis ?: return@mapNotNull null
+                val recordId = "$serial:$channelNo:$start:$end"
+                deviceRecordCache[recordId] = record
+                mapOf(
+                    "recordId" to recordId,
+                    "startTime" to start,
+                    "endTime" to end,
+                )
+            }.sortedBy { (it["startTime"] as Long) }
+        }
+    }
+
+    private fun downloadDeviceRecord(call: MethodCall, result: Result) {
+        val recordId = call.argument<String>("recordId")
+        val verifyCode = call.argument<String>("verifyCode").orEmpty()
+        val record = recordId?.let(deviceRecordCache::get)
+        val parts = recordId?.split(':')
+        val serial = parts?.getOrNull(0)
+        val channelNo = parts?.getOrNull(1)?.toIntOrNull()
+        val context = appContext
+        if (recordId.isNullOrEmpty() || record == null || serial.isNullOrEmpty() ||
+            channelNo == null || context == null
+        ) {
+            result.error("record_expired", "录像记录已失效，请重新查询录像列表", null)
+            return
+        }
+        if (activeDownloads.containsKey(recordId)) {
+            result.error("download_in_progress", "该录像正在下载", null)
+            return
+        }
+
+        val root = context.getExternalFilesDir(Environment.DIRECTORY_MOVIES) ?: context.filesDir
+        val folder = File(root, "ezviz/downloads").apply { mkdirs() }
+        val outputFile = File(folder, "device_${System.currentTimeMillis()}.mp4")
+        val downloader = try {
+            EZDeviceStreamDownload(
+                outputFile.absolutePath,
+                serial,
+                channelNo,
+                record,
+            )
+        } catch (error: Throwable) {
+            result.error("download_failed", error.message ?: error.toString(), null)
+            return
+        }
+        val completed = AtomicBoolean(false)
+        fun fail(code: String, message: String) {
+            if (!completed.compareAndSet(false, true)) return
+            activeDownloads.remove(recordId)
+            main.post { result.error(code, message, null) }
+        }
+        downloader.setStreamDownloadCallback(
+            object : EZOpenSDKListener.EZStreamDownloadCallbackEx() {
+                override fun onDownloadingSize(downloadSize: Long) = Unit
+
+                override fun onSuccess(filepath: String?) {
+                    if (!completed.compareAndSet(false, true)) return
+                    activeDownloads.remove(recordId)
+                    main.post { result.success(filepath ?: outputFile.absolutePath) }
+                }
+
+                override fun onError(code: EZOpenSDKListener.EZStreamDownloadError?) {
+                    fail("download_failed", code?.name ?: "录像下载失败")
+                }
+
+                override fun onErrorCode(code: Int) {
+                    fail("download_failed", "录像下载失败，错误码: $code")
+                }
+            },
+        )
+        if (verifyCode.isNotEmpty()) {
+            downloader.setSecretKey(verifyCode)
+        }
+        activeDownloads[recordId] = downloader
+        io.execute {
+            try {
+                downloader.start()
+            } catch (error: Throwable) {
+                fail("download_failed", error.message ?: error.toString())
+            }
+        }
+    }
+
+    private fun calendarAt(timeInMillis: Long): Calendar =
+        Calendar.getInstance().apply { this.timeInMillis = timeInMillis }
 
     private fun requestAudioPermission(result: Result) {
         val currentActivity = activity
@@ -820,6 +1004,25 @@ class EzvizPluginsPlugin :
         )
     }
 
+    private fun alarmToMap(alarm: EZAlarmInfo): Map<String, Any?> = mapOf(
+        "alarmId" to alarm.alarmId,
+        "alarmName" to alarm.alarmName,
+        "deviceSerial" to alarm.deviceSerial,
+        "deviceName" to alarm.deviceName,
+        "cameraNo" to alarm.cameraNo,
+        "alarmType" to alarm.alarmType,
+        "alarmPicUrl" to alarm.alarmPicUrl,
+        "alarmStartTime" to alarm.alarmStartTime,
+        "isRead" to (alarm.isRead == 1),
+        "isEncrypted" to (alarm.isEncrypt == 1),
+        "crypt" to alarm.crypt,
+        "checksum" to alarm.checksum,
+        "preTime" to alarm.preTime,
+        "delayTime" to alarm.delayTime,
+        "recordState" to alarm.recState,
+        "category" to alarm.category,
+    )
+
     private fun cameraToMap(device: EZDeviceInfo, camera: EZCameraInfo): Map<String, Any?> {
         return mapOf(
             "deviceSerial" to (camera.deviceSerial ?: device.deviceSerial),
@@ -1041,6 +1244,7 @@ class EzvizPluginsPlugin :
         private const val WIFI_PERMISSION_REQUEST_CODE = 0xE217
         private const val AUDIO_PERMISSION_REQUEST_CODE = 0xE218
         internal const val PLAYER_VIEW_TYPE = "ezviz_player_view"
+        internal const val PLAYBACK_VIEW_TYPE = "ezviz_playback_view"
 
         private const val STATUS_RETRY = "retry"
         private const val STATUS_ADD = "add"

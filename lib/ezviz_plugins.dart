@@ -12,3 +12,4 @@ library;
 export 'src/ezviz_control.dart';
 export 'src/ezviz_models.dart';
 export 'src/ezviz_player.dart';
+export 'src/ezviz_playback.dart';

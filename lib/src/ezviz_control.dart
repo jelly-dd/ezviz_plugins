@@ -121,6 +121,42 @@ class EzvizControl {
         .toList(growable: false);
   }
 
+  /// 获取设备告警。萤石 SDK 单页建议不超过 20 条。
+  Future<List<EzvizAlarm>> getAlarmList({
+    String? deviceSerial,
+    int page = 0,
+    int size = 20,
+    DateTime? beginTime,
+    DateTime? endTime,
+  }) async {
+    final result = await _invoke('getAlarmList', {
+      'deviceSerial': deviceSerial,
+      'page': page,
+      'size': size,
+      'beginTime': beginTime?.millisecondsSinceEpoch,
+      'endTime': endTime?.millisecondsSinceEpoch,
+    });
+    return ((result as List?) ?? const [])
+        .map((item) => EzvizAlarm.fromMap(_asMap(item)))
+        .toList(growable: false);
+  }
+
+  /// 获取设备告警未读数；不传序列号时查询账号下全部设备。
+  Future<int> getUnreadAlarmCount({String? deviceSerial}) async {
+    final result = await _invoke('getUnreadAlarmCount', {
+      'deviceSerial': deviceSerial,
+    });
+    return (result as num?)?.toInt() ?? 0;
+  }
+
+  Future<void> markAlarmsRead(Iterable<String> alarmIds) async {
+    await _invoke('markAlarmsRead', {'alarmIds': alarmIds.toList()});
+  }
+
+  Future<void> deleteAlarms(Iterable<String> alarmIds) async {
+    await _invoke('deleteAlarms', {'alarmIds': alarmIds.toList()});
+  }
+
   /// 探测设备并返回 App 可直接消费的五种状态。
   ///
   /// 需要配网时，[EzvizProbeResult.provisioning] 包含插件自动选定的方式。
@@ -242,6 +278,34 @@ class EzvizControl {
       'deviceSerial': deviceSerial,
       'index': index,
     });
+  }
+
+  Future<List<EzvizDeviceRecord>> searchDeviceRecords({
+    required String deviceSerial,
+    required int channelNo,
+    required DateTime startTime,
+    required DateTime endTime,
+  }) async {
+    final result = await _invoke('searchDeviceRecords', {
+      'deviceSerial': deviceSerial,
+      'channelNo': channelNo,
+      'startTime': startTime.millisecondsSinceEpoch,
+      'endTime': endTime.millisecondsSinceEpoch,
+    });
+    return ((result as List?) ?? const [])
+        .map((item) => EzvizDeviceRecord.fromMap(_asMap(item)))
+        .toList(growable: false);
+  }
+
+  Future<String> downloadDeviceRecord({
+    required EzvizDeviceRecord record,
+    String verifyCode = '',
+  }) async {
+    final result = await _invoke('downloadDeviceRecord', {
+      'recordId': record.recordId,
+      'verifyCode': verifyCode,
+    });
+    return result?.toString() ?? '';
   }
 
   /// 请求对讲所需的麦克风权限。
