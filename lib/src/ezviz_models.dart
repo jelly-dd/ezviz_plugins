@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 /// 探测设备后 App 需要处理的五种状态。
 enum EzvizDeviceStatus {
   retry,
@@ -188,6 +190,12 @@ class EzvizAlarm {
   final int recordState;
   final String? category;
 
+  /// SDK 厂商扩展事件类型，具体取值由设备/事件类型定义。
+  final String? customerType;
+
+  /// SDK 厂商扩展事件详情，可能是 JSON，也可能是原始文本。
+  final String? customerInfo;
+
   const EzvizAlarm({
     required this.alarmId,
     required this.alarmName,
@@ -205,9 +213,41 @@ class EzvizAlarm {
     this.delayTime = 0,
     this.recordState = 0,
     this.category,
+    this.customerType,
+    this.customerInfo,
   });
 
   bool get hasRecord => recordState != 0;
+
+  Map<String, dynamic>? get customerInfoJson {
+    final value = customerInfo?.trim();
+    if (value == null || value.isEmpty) return null;
+    try {
+      final decoded = jsonDecode(value);
+      return decoded is Map ? Map<String, dynamic>.from(decoded) : null;
+    } on FormatException {
+      return null;
+    }
+  }
+
+  /// 返回扩展字段中最适合直接展示给用户的事件详情。
+  String get detailMessage {
+    final json = customerInfoJson;
+    if (json != null) {
+      for (final key in [
+        'message',
+        'msg',
+        'description',
+        'eventName',
+        'alarmName',
+      ]) {
+        final value = json[key]?.toString().trim();
+        if (value != null && value.isNotEmpty) return value;
+      }
+    }
+    final raw = customerInfo?.trim();
+    return raw == null || raw.isEmpty ? alarmName : raw;
+  }
 
   factory EzvizAlarm.fromMap(Map<String, dynamic> map) {
     return EzvizAlarm(
@@ -227,6 +267,8 @@ class EzvizAlarm {
       delayTime: (map['delayTime'] as num?)?.toInt() ?? 0,
       recordState: (map['recordState'] as num?)?.toInt() ?? 0,
       category: map['category'] as String?,
+      customerType: map['customerType'] as String?,
+      customerInfo: map['customerInfo'] as String?,
     );
   }
 }

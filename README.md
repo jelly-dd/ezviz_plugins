@@ -353,6 +353,7 @@ final token = await ezviz.exchangeAccessTokenForTest(
 - `alarmPicUrl`、`encrypted`、`crypt` — 告警图片及加密信息
 - `alarmStartTime`、`preTime`、`delayTime` — 告警与事件录像时间范围
 - `read`、`recordState`、`hasRecord` — 阅读状态和录像存储状态
+- `customerType`、`customerInfo` — SDK 返回的厂商扩展事件类型和详细内容；`customerInfoJson` 可读取 JSON，`detailMessage` 返回适合直接展示的文本
 
 **`EzvizPlayback`** — 独立 SD 卡回放 Widget：
 - 支持开始、停止、暂停、继续、时间跳转、声音和倍速控制

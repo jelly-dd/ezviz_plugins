@@ -1021,6 +1021,8 @@ class EzvizPluginsPlugin :
         "delayTime" to alarm.delayTime,
         "recordState" to alarm.recState,
         "category" to alarm.category,
+        "customerType" to alarm.customerType,
+        "customerInfo" to alarm.customerInfo,
     )
 
     private fun cameraToMap(device: EZDeviceInfo, camera: EZCameraInfo): Map<String, Any?> {

@@ -289,6 +289,8 @@ void main() {
                 'preTime': 5,
                 'delayTime': 15,
                 'recordState': 4,
+                'customerType': 'person',
+                'customerInfo': '{"message":"检测到有人进入"}',
               },
             ],
             'getUnreadAlarmCount' => 3,
@@ -309,6 +311,9 @@ void main() {
     expect(alarms.single.cameraNo, 2);
     expect(alarms.single.encrypted, true);
     expect(alarms.single.hasRecord, true);
+    expect(alarms.single.customerType, 'person');
+    expect(alarms.single.customerInfoJson?['message'], '检测到有人进入');
+    expect(alarms.single.detailMessage, '检测到有人进入');
     expect(unread, 3);
     expect(calls.map((call) => call.method), [
       'getAlarmList',
