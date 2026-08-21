@@ -12,6 +12,52 @@ enum EzvizDeviceStatus {
 /// 插件根据设备能力自动选定的配网方式。
 enum EzvizProvisioningMethod { ap, smartAndSoundWave, smart, soundWave }
 
+class EzvizTouchApToken {
+  final String token;
+  final String registerUrl;
+  final String userId;
+
+  const EzvizTouchApToken({
+    required this.token,
+    required this.registerUrl,
+    this.userId = '',
+  });
+
+  factory EzvizTouchApToken.fromMap(Map<String, dynamic> map) {
+    return EzvizTouchApToken(
+      token: map['token'] as String? ?? '',
+      registerUrl: map['registerUrl'] as String? ?? '',
+      userId: map['userId'] as String? ?? '',
+    );
+  }
+}
+
+class EzvizTouchApDeviceInfo {
+  final String deviceSerial;
+  final String deviceType;
+  final String firmwareVersion;
+  final String apVersion;
+  final String deviceMac;
+
+  const EzvizTouchApDeviceInfo({
+    required this.deviceSerial,
+    this.deviceType = '',
+    this.firmwareVersion = '',
+    this.apVersion = '',
+    this.deviceMac = '',
+  });
+
+  factory EzvizTouchApDeviceInfo.fromMap(Map<String, dynamic> map) {
+    return EzvizTouchApDeviceInfo(
+      deviceSerial: map['deviceSerial'] as String? ?? '',
+      deviceType: map['deviceType'] as String? ?? '',
+      firmwareVersion: map['firmwareVersion'] as String? ?? '',
+      apVersion: map['apVersion'] as String? ?? '',
+      deviceMac: map['deviceMac'] as String? ?? '',
+    );
+  }
+}
+
 /// 萤石设备二维码中携带的设备身份信息。
 class EzvizDeviceQrInfo {
   final String source;

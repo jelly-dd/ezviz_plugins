@@ -202,6 +202,42 @@ class EzvizControl {
     return result?.toString() ?? '';
   }
 
+  Future<void> openWifiSettings() async {
+    await _invoke('openWifiSettings', const {});
+  }
+
+  Future<EzvizTouchApToken> getTouchApConfigToken() async {
+    final result = await _invoke('getTouchApConfigToken', const {});
+    return EzvizTouchApToken.fromMap(_asMap(result));
+  }
+
+  Future<EzvizTouchApDeviceInfo> getTouchApDeviceInfo() async {
+    final result = await _invoke('getTouchApDeviceInfo', const {});
+    return EzvizTouchApDeviceInfo.fromMap(_asMap(result));
+  }
+
+  Future<Map<String, dynamic>> startTouchApConfig({
+    required String token,
+    required String ssid,
+    required String password,
+    required String registerUrl,
+  }) async {
+    final result = await _invoke('startTouchApConfig', {
+      'token': token,
+      'ssid': ssid,
+      'password': password,
+      'registerUrl': registerUrl,
+    });
+    return _asMap(result);
+  }
+
+  Future<bool> queryTouchApBindStatus(String deviceSerial) async {
+    final result = await _invoke('queryTouchApBindStatus', {
+      'deviceSerial': deviceSerial,
+    });
+    return result == true;
+  }
+
   /// 绑定设备。[verifyCode] 是机身上的验证码。
   Future<void> addDevice({
     required String deviceSerial,

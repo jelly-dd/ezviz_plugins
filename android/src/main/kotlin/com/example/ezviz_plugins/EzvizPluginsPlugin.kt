@@ -4,14 +4,23 @@ import android.Manifest
 import android.app.Activity
 import android.app.Application
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.os.Build
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import com.ezviz.sdk.configwifi.EZConfigWifiErrorEnum
 import com.ezviz.sdk.configwifi.EZConfigWifiInfoEnum
+import com.ezviz.sdk.configwifi.touchAp.GetAccessDeviceInfoCallback
+import com.ezviz.sdk.configwifi.touchAp.GetTokenCallback
+import com.ezviz.sdk.configwifi.touchAp.QueryPlatformBindStatusCallback
+import com.ezviz.sdk.configwifi.touchAp.StartNewApConfigCallback
+import com.ezviz.http.exception.EzConfigWifiException
+import com.ezviz.http.model.AccessDeviceInfo
+import com.ezviz.http.model.DeviceTokenInfo
 import com.videogo.openapi.EZConstants
 import com.videogo.openapi.EZOpenSDK
 import com.videogo.openapi.EZOpenSDKListener
@@ -192,6 +201,11 @@ class EzvizPluginsPlugin :
             "downloadDeviceRecord" -> downloadDeviceRecord(call, result)
             "requestAudioPermission" -> requestAudioPermission(result)
             "getCurrentWifiSsid" -> getCurrentWifiSsid(result)
+            "openWifiSettings" -> openWifiSettings(result)
+            "getTouchApConfigToken" -> getTouchApConfigToken(result)
+            "getTouchApDeviceInfo" -> getTouchApDeviceInfo(result)
+            "startTouchApConfig" -> startTouchApConfig(call, result)
+            "queryTouchApBindStatus" -> queryTouchApBindStatus(call, result)
             "startConfigWifi" -> startConfigWifi(call, result)
             "stopConfigWifi" -> stopConfigWifi(result)
             "logout" -> logout(result)
@@ -767,6 +781,173 @@ class EzvizPluginsPlugin :
             result.success(cleanSsid)
         } catch (e: Throwable) {
             result.error("ezviz_error", e.message ?: e.toString(), null)
+        }
+    }
+
+    private fun openWifiSettings(result: Result) {
+        val currentActivity = activity
+        if (currentActivity == null) {
+            result.error("no_activity", "打开 WiFi 设置需要前台 Activity", null)
+            return
+        }
+        try {
+            currentActivity.startActivity(Intent(Settings.ACTION_WIFI_SETTINGS))
+            result.success(true)
+        } catch (error: Throwable) {
+            result.error("settings_error", error.message ?: error.toString(), null)
+        }
+    }
+
+    private fun getTouchApConfigToken(result: Result) {
+        try {
+            EZOpenSDK.getInstance().getNewApConfigToken(
+                object : GetTokenCallback {
+                    override fun onSuccess(tokenInfo: DeviceTokenInfo?) {
+                        val token = tokenInfo?.token.orEmpty()
+                        val registerUrl = tokenInfo?.registerUrl.orEmpty()
+                        if (token.isEmpty() || registerUrl.isEmpty()) {
+                            main.post {
+                                result.error("bad_response", "接触式 AP 配网 token 或注册地址为空", null)
+                            }
+                            return
+                        }
+                        main.post {
+                            result.success(
+                                mapOf(
+                                    "token" to token,
+                                    "registerUrl" to registerUrl,
+                                    "userId" to tokenInfo?.userId.orEmpty(),
+                                ),
+                            )
+                        }
+                    }
+
+                    override fun onError(error: EzConfigWifiException?) {
+                        postTouchApError(result, "获取接触式 AP 配网 token 失败", error)
+                    }
+                },
+            )
+        } catch (error: Throwable) {
+            result.error("ezviz_error", error.message ?: error.toString(), null)
+        }
+    }
+
+    private fun getTouchApDeviceInfo(result: Result) {
+        try {
+            EZOpenSDK.getInstance().getAccessDeviceInfo(
+                object : GetAccessDeviceInfoCallback {
+                    override fun onSuccess(deviceInfo: AccessDeviceInfo?) {
+                        val serial = deviceInfo?.devSubserial.orEmpty()
+                        if (serial.isEmpty()) {
+                            main.post {
+                                result.error("bad_response", "设备热点未返回设备序列号", null)
+                            }
+                            return
+                        }
+                        main.post {
+                            result.success(
+                                mapOf(
+                                    "deviceSerial" to serial,
+                                    "deviceType" to deviceInfo?.devType.orEmpty(),
+                                    "firmwareVersion" to deviceInfo?.devFirmwareversion.orEmpty(),
+                                    "apVersion" to deviceInfo?.apVersion.orEmpty(),
+                                    "deviceMac" to deviceInfo?.devMac.orEmpty(),
+                                ),
+                            )
+                        }
+                    }
+
+                    override fun onError(error: EzConfigWifiException?) {
+                        postTouchApError(result, "读取设备热点信息失败，请确认已连接设备热点", error)
+                    }
+                },
+            )
+        } catch (error: Throwable) {
+            result.error("ezviz_error", error.message ?: error.toString(), null)
+        }
+    }
+
+    private fun startTouchApConfig(call: MethodCall, result: Result) {
+        val token = call.argument<String>("token")
+        val ssid = call.argument<String>("ssid")
+        val password = call.argument<String>("password") ?: ""
+        val registerUrl = call.argument<String>("registerUrl")
+        if (token.isNullOrBlank() || ssid.isNullOrBlank() || registerUrl.isNullOrBlank()) {
+            result.error("bad_args", "token/ssid/registerUrl 不能为空", null)
+            return
+        }
+        try {
+            EZOpenSDK.getInstance().startNewApConfigWithToken(
+                token,
+                ssid,
+                password,
+                registerUrl,
+                object : StartNewApConfigCallback {
+                    override fun onResponse(statusCode: Int, statusDesc: String?) {
+                        main.post {
+                            result.success(
+                                mapOf(
+                                    "statusCode" to statusCode,
+                                    "statusDesc" to statusDesc.orEmpty(),
+                                ),
+                            )
+                        }
+                    }
+
+                    override fun onError(error: EzConfigWifiException?) {
+                        main.post {
+                            result.success(
+                                mapOf(
+                                    "statusCode" to (error?.errorCode ?: -1),
+                                    "statusDesc" to
+                                        (error?.message?.takeIf { it.isNotBlank() }
+                                            ?: "WiFi 信息已发送，继续查询绑定状态"),
+                                ),
+                            )
+                        }
+                    }
+                },
+            )
+        } catch (error: Throwable) {
+            result.error("ezviz_error", error.message ?: error.toString(), null)
+        }
+    }
+
+    private fun queryTouchApBindStatus(call: MethodCall, result: Result) {
+        val deviceSerial = call.argument<String>("deviceSerial")
+        if (deviceSerial.isNullOrBlank()) {
+            result.error("bad_args", "deviceSerial 不能为空", null)
+            return
+        }
+        try {
+            EZOpenSDK.getInstance().queryPlatformBindStatus(
+                deviceSerial,
+                object : QueryPlatformBindStatusCallback {
+                    override fun onSuccess(isBindSuccess: Boolean) {
+                        main.post { result.success(isBindSuccess) }
+                    }
+
+                    override fun onError(error: EzConfigWifiException?) {
+                        postTouchApError(result, "查询设备绑定状态失败", error)
+                    }
+                },
+            )
+        } catch (error: Throwable) {
+            result.error("ezviz_error", error.message ?: error.toString(), null)
+        }
+    }
+
+    private fun postTouchApError(
+        result: Result,
+        fallbackMessage: String,
+        error: EzConfigWifiException?,
+    ) {
+        main.post {
+            result.error(
+                "touch_ap_error",
+                error?.message?.takeIf { it.isNotBlank() } ?: fallbackMessage,
+                mapOf("code" to (error?.errorCode ?: -1)),
+            )
         }
     }
 
